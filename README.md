@@ -21,6 +21,11 @@ A lightweight desktop app to browse your Claude Code session history across all 
 
 Download the latest `.dmg` from [Releases](../../releases), open it, and drag **Claude Sessions** to Applications.
 
+If macOS shows "app is damaged", run this once:
+```bash
+xattr -cr /Applications/Claude\ Sessions.app
+```
+
 Or use the install script:
 
 ```bash

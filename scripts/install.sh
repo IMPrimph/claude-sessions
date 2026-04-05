@@ -63,6 +63,9 @@ cp -r "$MOUNT_POINT/$APP_NAME.app" /Applications/
 hdiutil detach "$MOUNT_POINT" -quiet
 rm -rf "$TMPDIR"
 
+# Remove quarantine attribute so macOS Gatekeeper doesn't block it
+xattr -cr "/Applications/$APP_NAME.app"
+
 echo ""
 echo "Installed! Open '$APP_NAME' from your Applications folder."
 echo "Or run: open '/Applications/$APP_NAME.app'"
