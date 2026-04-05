@@ -1,0 +1,332 @@
+---
+import '../styles/global.css'
+
+const REPO = "IMPrimph/claude-sessions"
+const VERSION = "0.1.0"
+const DOWNLOAD_ARM = `https://github.com/${REPO}/releases/download/v${VERSION}/Claude.Sessions_${VERSION}_aarch64.dmg`
+const DOWNLOAD_INTEL = `https://github.com/${REPO}/releases/download/v${VERSION}/Claude.Sessions_${VERSION}_x64.dmg`
+const GITHUB_URL = `https://github.com/${REPO}`
+
+const features = [
+  {
+    title: "Every session, every project",
+    description: "Browse all your Claude Code sessions across every project folder. One app, complete history.",
+    icon: "grid"
+  },
+  {
+    title: "Instant loading",
+    description: "Opens 60+ session folders in under a second. Rust-powered backend parses gigabytes of session data without breaking a sweat.",
+    icon: "zap"
+  },
+  {
+    title: "Search everything",
+    description: "Find any message across any session. Cmd+F to search within conversations, filter sessions by name.",
+    icon: "search"
+  },
+  {
+    title: "Compaction aware",
+    description: "See when context was compacted and what the summary contained. Never lose track of long conversations.",
+    icon: "layers"
+  },
+  {
+    title: "Session names preserved",
+    description: "Custom /rename titles, first prompts, and AI summaries — your sessions keep their identity.",
+    icon: "tag"
+  },
+  {
+    title: "Completely local",
+    description: "Reads directly from ~/.claude/projects. No servers, no accounts, no data ever leaves your machine.",
+    icon: "lock"
+  }
+]
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#08080f" />
+
+    <!-- SEO -->
+    <title>Claude Sessions — Browse your Claude Code history</title>
+    <meta name="description" content="A lightweight desktop app to browse your Claude Code session history across all projects. Search messages, track compactions, and never lose a prompt again." />
+    <meta name="keywords" content="Claude Code, session history, desktop app, Claude AI, developer tools, Tauri, session browser" />
+    <link rel="canonical" href="https://claudesessions.dev" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Claude Sessions — Browse your Claude Code history" />
+    <meta property="og:description" content="A lightweight desktop app to browse your Claude Code session history across all projects. Fast, local, and beautiful." />
+    <meta property="og:url" content="https://claudesessions.dev" />
+    <meta property="og:image" content="https://claudesessions.dev/og-image.png" />
+    <meta property="og:site_name" content="Claude Sessions" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Claude Sessions — Browse your Claude Code history" />
+    <meta name="twitter:description" content="A lightweight desktop app to browse your Claude Code session history across all projects." />
+    <meta name="twitter:image" content="https://claudesessions.dev/og-image.png" />
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-[#08080f] text-[#c8c8e0] antialiased overflow-x-hidden">
+
+    <!-- Ambient glow background -->
+    <div class="fixed inset-0 pointer-events-none overflow-hidden">
+      <div class="absolute top-[-30%] left-[20%] w-[600px] h-[600px] bg-indigo-600/[0.07] rounded-full blur-[150px]"></div>
+      <div class="absolute bottom-[-20%] right-[10%] w-[500px] h-[500px] bg-violet-600/[0.05] rounded-full blur-[150px]"></div>
+    </div>
+
+    <!-- Nav -->
+    <nav class="relative z-10 flex items-center justify-between max-w-6xl mx-auto px-6 py-6">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        </div>
+        <span class="font-display font-bold text-lg text-white tracking-tight">Claude Sessions</span>
+      </div>
+      <span class="text-sm text-[#4a4a6a]">v{VERSION}</span>
+    </nav>
+
+    <!-- Hero -->
+    <section class="relative z-10 max-w-6xl mx-auto px-6 pt-16 pb-8 text-center">
+      <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-[#2a2a4a] bg-[#12121e] text-xs text-[#8a8aaa] mb-8 animate-fade-in">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+        v{VERSION} — Now available for macOS
+      </div>
+
+      <h1 class="font-display font-bold text-5xl md:text-7xl text-white leading-[1.08] tracking-tight mb-6 animate-fade-in-up">
+        Your Claude Code<br/>
+        <span class="bg-gradient-to-r from-indigo-400 via-violet-400 to-purple-400 bg-clip-text text-transparent">session history,</span><br/>
+        unlocked
+      </h1>
+
+      <p class="max-w-xl mx-auto text-lg text-[#7a7a9a] leading-relaxed mb-10 animate-fade-in-up-delay">
+        Browse every conversation across all your projects. Search messages, track compactions, and never lose a prompt again. Lightning fast, completely local.
+      </p>
+
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-3 mb-4 animate-fade-in-up-delay-2">
+        <a href={DOWNLOAD_ARM} class="group relative inline-flex items-center gap-3 px-7 py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold text-sm hover:from-indigo-500 hover:to-violet-500 transition-all duration-300 shadow-[0_0_40px_rgba(99,102,241,0.3)] hover:shadow-[0_0_60px_rgba(99,102,241,0.4)]">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download for Apple Silicon
+        </a>
+        <a href={DOWNLOAD_INTEL} class="inline-flex items-center gap-3 px-7 py-3.5 rounded-xl border border-[#2a2a4a] bg-[#12121e] text-[#c0c0d8] font-semibold text-sm hover:bg-[#1a1a2e] hover:border-[#3a3a5a] transition-all duration-300">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download for Intel Mac
+        </a>
+      </div>
+
+      <p class="text-xs text-[#4a4a6a] animate-fade-in-up-delay-2 mb-3">
+        macOS 12+ &middot; ~3 MB &middot; No signup required
+      </p>
+      <details class="text-xs text-[#4a4a6a] animate-fade-in-up-delay-2 max-w-md mx-auto">
+        <summary class="cursor-pointer hover:text-[#8a8aaa] transition-colors">First time opening? macOS may block unsigned apps</summary>
+        <div class="mt-2 text-left bg-[#12121e] border border-[#2a2a4a] rounded-lg p-4 space-y-2">
+          <p>If you see <span class="text-[#8a8aaa]">"app is damaged"</span>, run this in Terminal:</p>
+          <code class="block bg-[#08080f] text-indigo-400 px-3 py-2 rounded font-mono text-xs">xattr -cr /Applications/Claude\ Sessions.app</code>
+          <p>Then open the app normally. This is a one-time step for unsigned apps.</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- Hero Screenshot -->
+    <section class="relative z-10 max-w-5xl mx-auto px-6 py-12">
+      <div class="relative rounded-2xl overflow-hidden border border-[#1e1e3a] shadow-[0_0_80px_rgba(99,102,241,0.1)] animate-fade-in-up-delay-3">
+        <!-- Window chrome -->
+        <div class="flex items-center gap-2 px-5 py-3 bg-[#12121e] border-b border-[#1e1e3a]">
+          <div class="w-3 h-3 rounded-full bg-[#ff5f57]"></div>
+          <div class="w-3 h-3 rounded-full bg-[#febc2e]"></div>
+          <div class="w-3 h-3 rounded-full bg-[#28c840]"></div>
+          <span class="ml-3 text-xs text-[#5a5a7a] font-mono">Claude Sessions</span>
+        </div>
+        <!-- Mock app UI -->
+        <div class="flex bg-[#0e0e1a] min-h-[420px]">
+          <!-- Sidebar -->
+          <div class="w-[280px] border-r border-[#1e1e3a] p-4 flex-shrink-0 hidden md:block">
+            <div class="flex items-center gap-2 mb-4">
+              <div class="w-6 h-6 rounded bg-[#2a2a4a] flex items-center justify-center">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#7a7a9a" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+              </div>
+              <div>
+                <div class="text-xs font-semibold text-white">my-app</div>
+                <div class="text-[10px] text-[#5a5a7a]">~/Documents/my-app</div>
+              </div>
+            </div>
+            <div class="text-[10px] text-[#5a5a7a] font-semibold tracking-wider mb-2">TODAY</div>
+            <div class="space-y-1">
+              <div class="p-2.5 rounded-lg bg-[rgba(99,102,241,0.12)] shadow-[inset_3px_0_0_0_#6366f1]">
+                <div class="text-xs font-semibold text-[#ececff] mb-1">Build creative report system</div>
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] text-[#585878] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 rounded">33</span>
+                  <span class="text-[10px] text-[#585878] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 rounded">62.6k</span>
+                  <span class="text-[10px] text-[#505070] ml-auto">07:55 AM</span>
+                </div>
+              </div>
+              <div class="p-2.5 rounded-lg hover:bg-[rgba(99,102,241,0.06)] transition-colors">
+                <div class="text-xs font-semibold text-[#d8d8f0] mb-1">Fix auth middleware</div>
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] text-[#585878] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 rounded">142</span>
+                  <span class="text-[10px] text-[#585878] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 rounded">140.2k</span>
+                  <span class="text-[10px] text-[#505070] ml-auto">06:10 AM</span>
+                </div>
+              </div>
+            </div>
+            <div class="text-[10px] text-[#5a5a7a] font-semibold tracking-wider mt-4 mb-2 pt-3 border-t border-[#222240]">YESTERDAY</div>
+            <div class="space-y-1">
+              <div class="p-2.5 rounded-lg">
+                <div class="text-xs font-semibold text-[#d8d8f0] mb-1">Debug API integration</div>
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] text-[#585878] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 rounded">18</span>
+                  <span class="text-[10px] text-[#505070] ml-auto">07:19 PM</span>
+                </div>
+              </div>
+              <div class="p-2.5 rounded-lg">
+                <div class="text-xs font-semibold text-[#d8d8f0] mb-1">Refactor data pipeline</div>
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] text-[#585878] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 rounded">21</span>
+                  <span class="text-[10px] text-[#505070] ml-auto">06:39 PM</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- Main content -->
+          <div class="flex-1 p-6">
+            <div class="mb-5">
+              <div class="text-sm font-semibold text-white mb-1">Build creative report system</div>
+              <div class="text-[10px] text-[#5a5a7a]">my-app &middot; 3 Apr 2026 at 05:43 AM → 07:55 AM <span class="text-indigo-400">(2h 12m)</span></div>
+            </div>
+            <div class="space-y-4">
+              <!-- User message -->
+              <div class="flex justify-end">
+                <div class="max-w-[70%] bg-[#1e1e3a] rounded-xl rounded-tr-sm px-4 py-3">
+                  <div class="text-[10px] text-[#5a5a7a] text-right mb-1">05:43 AM &middot; You</div>
+                  <p class="text-xs text-[#c0c0d8] leading-relaxed">go through this folder and understand the different types of reports that are present, how we are gathering data and rendering the pdfs</p>
+                </div>
+              </div>
+              <!-- Claude message -->
+              <div>
+                <div class="flex items-center gap-2 mb-2">
+                  <div class="w-5 h-5 rounded-full bg-emerald-600/20 flex items-center justify-center text-[10px] font-bold text-emerald-400">C</div>
+                  <span class="text-[10px] text-[#5a5a7a]">Claude &middot; 05:43 AM</span>
+                </div>
+                <div class="bg-[#16162a] rounded-xl px-4 py-3 border border-[#1e1e3a]">
+                  <p class="text-xs text-[#b0b0c8] leading-relaxed mb-2">I'll do a comprehensive exploration of the report system. Let me launch parallel agents to cover all aspects.</p>
+                  <div class="text-xs font-semibold text-white mb-1">Report System Overview</div>
+                  <p class="text-xs text-[#b0b0c8] leading-relaxed">Found <span class="text-indigo-400 font-semibold">13 module types</span> across the creative intelligence system with PDF generation, data aggregation, and template rendering...</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="relative z-10 max-w-6xl mx-auto px-6 py-20">
+      <div class="text-center mb-16">
+        <h2 class="font-display font-bold text-3xl md:text-4xl text-white tracking-tight mb-4">
+          Everything your terminal doesn't show you
+        </h2>
+        <p class="text-[#6a6a8a] max-w-lg mx-auto">
+          Claude Code sessions disappear into JSONL logs. Claude Sessions makes them browsable, searchable, and useful.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        {features.map((feature) => (
+          <div class="group p-6 rounded-xl border border-[#1a1a2e] bg-[#0c0c18] hover:border-[#2a2a4a] hover:bg-[#10101e] transition-all duration-300">
+            <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-600/20 to-violet-600/20 border border-indigo-500/10 flex items-center justify-center mb-4 group-hover:from-indigo-600/30 group-hover:to-violet-600/30 transition-all duration-300">
+              {feature.icon === "grid" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>}
+              {feature.icon === "zap" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>}
+              {feature.icon === "search" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>}
+              {feature.icon === "layers" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.5"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>}
+              {feature.icon === "tag" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.5"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>}
+              {feature.icon === "lock" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>}
+            </div>
+            <h3 class="font-display font-semibold text-white text-base mb-2">{feature.title}</h3>
+            <p class="text-sm text-[#6a6a8a] leading-relaxed">{feature.description}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="relative z-10 max-w-4xl mx-auto px-6 py-20">
+      <div class="text-center mb-14">
+        <h2 class="font-display font-bold text-3xl md:text-4xl text-white tracking-tight mb-4">
+          Three seconds to get started
+        </h2>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div class="text-center">
+          <div class="w-12 h-12 rounded-full border-2 border-[#2a2a4a] bg-[#12121e] flex items-center justify-center mx-auto mb-4">
+            <span class="font-mono font-bold text-indigo-400">1</span>
+          </div>
+          <h3 class="font-display font-semibold text-white mb-2">Download</h3>
+          <p class="text-sm text-[#6a6a8a]">Grab the DMG for your Mac. Only 3 MB.</p>
+        </div>
+        <div class="text-center">
+          <div class="w-12 h-12 rounded-full border-2 border-[#2a2a4a] bg-[#12121e] flex items-center justify-center mx-auto mb-4">
+            <span class="font-mono font-bold text-indigo-400">2</span>
+          </div>
+          <h3 class="font-display font-semibold text-white mb-2">Open</h3>
+          <p class="text-sm text-[#6a6a8a]">Drag to Applications and launch. No signup, no config.</p>
+        </div>
+        <div class="text-center">
+          <div class="w-12 h-12 rounded-full border-2 border-[#2a2a4a] bg-[#12121e] flex items-center justify-center mx-auto mb-4">
+            <span class="font-mono font-bold text-indigo-400">3</span>
+          </div>
+          <h3 class="font-display font-semibold text-white mb-2">Browse</h3>
+          <p class="text-sm text-[#6a6a8a]">All your Claude Code sessions, instantly organized by project.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="relative z-10 max-w-3xl mx-auto px-6 py-20 text-center">
+      <div class="p-10 rounded-2xl border border-[#1e1e3a] bg-gradient-to-b from-[#0f0f1e] to-[#0a0a16] relative overflow-hidden">
+        <div class="absolute inset-0 bg-gradient-to-r from-indigo-600/5 via-violet-600/5 to-purple-600/5"></div>
+        <div class="relative">
+          <h2 class="font-display font-bold text-2xl md:text-3xl text-white tracking-tight mb-4">
+            Stop losing your conversations
+          </h2>
+          <p class="text-[#6a6a8a] mb-8 max-w-md mx-auto">
+            Every prompt, every response, every session — searchable and organized.
+          </p>
+          <div class="flex flex-col sm:flex-row items-center justify-center gap-3">
+            <a href={DOWNLOAD_ARM} class="inline-flex items-center gap-3 px-7 py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold text-sm hover:from-indigo-500 hover:to-violet-500 transition-all duration-300 shadow-[0_0_40px_rgba(99,102,241,0.25)]">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Apple Silicon
+            </a>
+            <a href={DOWNLOAD_INTEL} class="inline-flex items-center gap-3 px-7 py-3.5 rounded-xl border border-[#2a2a4a] bg-[#12121e] text-[#c0c0d8] font-semibold text-sm hover:bg-[#1a1a2e] hover:border-[#3a3a5a] transition-all duration-300">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Intel Mac
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="relative z-10 border-t border-[#1a1a2e] py-8 mt-8">
+      <div class="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+          <div class="w-6 h-6 rounded-md bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          </div>
+          <span class="text-sm text-[#5a5a7a]">Claude Sessions &middot; v{VERSION}</span>
+        </div>
+        <div class="flex items-center gap-6 text-sm text-[#5a5a7a]">
+          <span>Built with Tauri + Svelte</span>
+        </div>
+      </div>
+    </footer>
+
+  </body>
+</html>
