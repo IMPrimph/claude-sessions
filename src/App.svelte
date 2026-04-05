@@ -4,6 +4,7 @@
     ProjectInfo,
     SessionInfo,
     ConversationMessage,
+    GlobalSearchResult,
   } from "./lib/types";
   import ProjectGrid from "./lib/ProjectGrid.svelte";
   import SessionList from "./lib/SessionList.svelte";
@@ -95,6 +96,21 @@
     }
   }
 
+  async function openSearchResult(result: GlobalSearchResult) {
+    const matchingProject = projects.find(
+      (project) => project.project_path === result.project_path
+    );
+    if (matchingProject) {
+      await selectProject(matchingProject);
+      const matchingSession = sessions.find(
+        (session) => session.session_id === result.session_id
+      );
+      if (matchingSession) {
+        await selectSession(matchingSession);
+      }
+    }
+  }
+
   $effect(() => {
     loadProjects();
   });
@@ -107,7 +123,7 @@
       <p>Loading projects...</p>
     </div>
   {:else if !selectedProject}
-    <ProjectGrid {projects} onSelect={selectProject} />
+    <ProjectGrid {projects} onSelect={selectProject} onOpenResult={openSearchResult} />
   {:else}
     <div class="app-layout">
       <aside class="sidebar">
@@ -267,4 +283,5 @@
     flex: 1;
     min-width: 0;
   }
+
 </style>

@@ -19,14 +19,22 @@
 
   let searchQuery = $state("");
 
+  function fuzzyMatch(text: string | null | undefined, queryWords: string[]): boolean {
+    if (!text) return false;
+    const lower = text.toLowerCase();
+    return queryWords.every((word) => lower.includes(word));
+  }
+
   let filteredSessions = $derived(
     sessions.filter((session) => {
       if (!searchQuery) return true;
-      const query = searchQuery.toLowerCase();
+      const queryWords = searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
+      if (queryWords.length === 0) return true;
       return (
-        (session.summary?.toLowerCase().includes(query) ?? false) ||
-        (session.first_prompt?.toLowerCase().includes(query) ?? false) ||
-        session.project_name.toLowerCase().includes(query)
+        fuzzyMatch(session.summary, queryWords) ||
+        fuzzyMatch(session.first_prompt, queryWords) ||
+        fuzzyMatch(session.project_name, queryWords) ||
+        fuzzyMatch(session.session_id, queryWords)
       );
     })
   );

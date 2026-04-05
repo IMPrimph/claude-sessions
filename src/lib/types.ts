@@ -22,6 +22,17 @@ export interface SessionInfo {
   jsonl_path: string;
 }
 
+export interface GlobalSearchResult {
+  session_id: string;
+  project_name: string;
+  project_path: string;
+  session_name: string;
+  matched_text: string;
+  match_source: "session_name" | "message";
+  timestamp: string | null;
+  jsonl_path: string;
+}
+
 export interface ConversationMessage {
   role: "user" | "assistant" | "compaction";
   text: string;

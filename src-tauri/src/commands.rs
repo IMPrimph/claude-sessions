@@ -394,6 +394,170 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
     Ok(sessions)
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct GlobalSearchResult {
+    pub session_id: String,
+    pub project_name: String,
+    pub project_path: String,
+    pub session_name: String,
+    pub matched_text: String,
+    pub match_source: String, // "session_name", "message"
+    pub timestamp: Option<String>,
+    pub jsonl_path: String,
+}
+
+#[tauri::command]
+pub fn global_search(query: String) -> Result<Vec<GlobalSearchResult>, String> {
+    let claude_dir = get_claude_projects_dir()?;
+    let mut results: Vec<GlobalSearchResult> = Vec::new();
+    let query_lower = query.to_lowercase();
+    let query_words: Vec<&str> = query_lower.split_whitespace().collect();
+
+    if query_words.is_empty() {
+        return Ok(results);
+    }
+
+    let project_dirs = fs::read_dir(&claude_dir)
+        .map_err(|read_error| format!("Cannot read {:?}: {}", claude_dir, read_error))?;
+
+    for project_entry in project_dirs.flatten() {
+        let project_dir = project_entry.path();
+        if !project_dir.is_dir() {
+            continue;
+        }
+
+        let dir_name = project_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        let original_path = resolve_project_path(&project_dir, &dir_name);
+        let project_name = original_path
+            .split('/')
+            .last()
+            .unwrap_or(&original_path)
+            .to_string();
+
+        let files = match fs::read_dir(&project_dir) {
+            Ok(files) => files,
+            Err(_) => continue,
+        };
+
+        for file_entry in files.flatten() {
+            let file_path = file_entry.path();
+            if file_path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+
+            let session_id = file_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+
+            let metadata = extract_quick_metadata(&file_path);
+            let session_name = metadata
+                .custom_title
+                .clone()
+                .or(metadata.first_prompt.clone())
+                .unwrap_or_else(|| session_id.clone());
+
+            // Check if session name matches
+            let name_lower = session_name.to_lowercase();
+            if query_words.iter().all(|word| name_lower.contains(word)) {
+                results.push(GlobalSearchResult {
+                    session_id: session_id.clone(),
+                    project_name: project_name.clone(),
+                    project_path: original_path.clone(),
+                    session_name: session_name.chars().take(120).collect(),
+                    matched_text: session_name.chars().take(120).collect(),
+                    match_source: "session_name".to_string(),
+                    timestamp: metadata.first_timestamp.clone(),
+                    jsonl_path: file_path.to_string_lossy().to_string(),
+                });
+                continue; // Don't also search messages if name matched
+            }
+
+            // Search message content (only user and assistant text blocks)
+            let file = match fs::File::open(&file_path) {
+                Ok(file) => file,
+                Err(_) => continue,
+            };
+            let reader = BufReader::new(file);
+            let mut found_in_session = false;
+
+            for line in reader.lines().flatten() {
+                if found_in_session {
+                    break;
+                }
+                // Fast pre-check before JSON parsing
+                let line_lower = line.to_lowercase();
+                if !query_words.iter().all(|word| line_lower.contains(word)) {
+                    continue;
+                }
+
+                if let Ok(entry) = serde_json::from_str::<JsonlEntry>(&line) {
+                    let entry_type = match &entry.entry_type {
+                        Some(entry_type) => entry_type.as_str(),
+                        None => continue,
+                    };
+                    if entry.is_sidechain.unwrap_or(false) {
+                        continue;
+                    }
+                    if entry_type == "user" && entry.tool_use_result.is_none() {
+                        let text = extract_user_text(&entry.message);
+                        let text_lower = text.to_lowercase();
+                        if query_words.iter().all(|word| text_lower.contains(word)) {
+                            results.push(GlobalSearchResult {
+                                session_id: session_id.clone(),
+                                project_name: project_name.clone(),
+                                project_path: original_path.clone(),
+                                session_name: session_name.chars().take(120).collect(),
+                                matched_text: text.chars().take(200).collect(),
+                                match_source: "message".to_string(),
+                                timestamp: entry.timestamp,
+                                jsonl_path: file_path.to_string_lossy().to_string(),
+                            });
+                            found_in_session = true;
+                        }
+                    } else if entry_type == "assistant" {
+                        let text = extract_assistant_text(&entry.message.as_ref().and_then(|msg| msg.content.clone()));
+                        let text_lower = text.to_lowercase();
+                        if query_words.iter().all(|word| text_lower.contains(word)) {
+                            results.push(GlobalSearchResult {
+                                session_id: session_id.clone(),
+                                project_name: project_name.clone(),
+                                project_path: original_path.clone(),
+                                session_name: session_name.chars().take(120).collect(),
+                                matched_text: text.chars().take(200).collect(),
+                                match_source: "message".to_string(),
+                                timestamp: entry.timestamp,
+                                jsonl_path: file_path.to_string_lossy().to_string(),
+                            });
+                            found_in_session = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by timestamp, most recent first
+    results.sort_by(|result_a, result_b| {
+        result_b
+            .timestamp
+            .as_deref()
+            .unwrap_or("")
+            .cmp(result_a.timestamp.as_deref().unwrap_or(""))
+    });
+
+    // Limit to 50 results
+    results.truncate(50);
+
+    Ok(results)
+}
+
 #[tauri::command]
 pub fn get_session_tokens(jsonl_path: String) -> Result<u64, String> {
     let path = PathBuf::from(&jsonl_path);
