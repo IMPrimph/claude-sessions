@@ -2,8 +2,6 @@
 
 A lightweight desktop app to browse your Claude Code session history across all projects.
 
-![Claude Sessions](https://img.shields.io/badge/Tauri-2.10-blue) ![Svelte](https://img.shields.io/badge/Svelte-5-orange)
-
 ## Features
 
 - Browse all Claude Code sessions across every project folder
@@ -17,20 +15,27 @@ A lightweight desktop app to browse your Claude Code session history across all 
 - Token counts loaded in the background
 - Handles 500k+ token sessions without lag
 
-## Prerequisites
-
-- [Node.js](https://nodejs.org/) (v18+)
-- [Rust](https://rustup.rs/) (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-
 ## Install
 
+### macOS (pre-built)
+
+Download the latest `.dmg` from [Releases](../../releases), open it, and drag **Claude Sessions** to Applications.
+
+Or use the install script:
+
 ```bash
-git clone <repo-url> claude-sessions
-cd claude-sessions
-./scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/IMPrimph/claude-sessions/main/scripts/install.sh | bash
 ```
 
-The script will build the app and optionally install it to `/Applications` (macOS).
+### Build from source
+
+Requires [Node.js](https://nodejs.org/) (v18+) and [Rust](https://rustup.rs/).
+
+```bash
+git clone https://github.com/IMPrimph/claude-sessions.git
+cd claude-sessions
+./scripts/build.sh
+```
 
 ## Development
 
