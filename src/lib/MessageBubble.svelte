@@ -3,14 +3,79 @@
 
   let { message, searchQuery = "" }: { message: ConversationMessage; searchQuery?: string } = $props();
 
+  // ── Segment types for structured assistant rendering ──
+
+  type Segment =
+    | { kind: "text"; content: string }
+    | { kind: "tool"; name: string; summary: string }
+    | { kind: "thinking"; content: string };
+
+  function parseAssistantSegments(text: string): Segment[] {
+    const segments: Segment[] = [];
+    const markerRegex = /\{\{TOOL:([^|}]+)\|([^}]*)\}\}|\{\{THINKING_START\}\}\n?([\s\S]*?)\n?\{\{THINKING_END\}\}/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = markerRegex.exec(text)) !== null) {
+      // Push preceding text
+      if (match.index > lastIndex) {
+        const preceding = text.slice(lastIndex, match.index).trim();
+        if (preceding) segments.push({ kind: "text", content: preceding });
+      }
+
+      if (match[1] !== undefined) {
+        // Tool marker
+        segments.push({ kind: "tool", name: match[1], summary: match[2] });
+      } else if (match[3] !== undefined) {
+        // Thinking block
+        segments.push({ kind: "thinking", content: match[3] });
+      }
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Push trailing text
+    if (lastIndex < text.length) {
+      const trailing = text.slice(lastIndex).trim();
+      if (trailing) segments.push({ kind: "text", content: trailing });
+    }
+
+    return segments;
+  }
+
+  let assistantSegments = $derived(
+    message.role === "assistant" ? parseAssistantSegments(message.text) : []
+  );
+
+  // ── Tool colors ──
+
+  function toolColor(name: string): string {
+    const colors: Record<string, string> = {
+      Read: "#22d3ee",
+      Write: "#a78bfa",
+      Edit: "#f59e0b",
+      Bash: "#f97316",
+      Grep: "#34d399",
+      Glob: "#34d399",
+      Agent: "#818cf8",
+      Skill: "#ec4899",
+      TaskCreate: "#6366f1",
+      TaskUpdate: "#6366f1",
+      TaskGet: "#6366f1",
+      TaskList: "#6366f1",
+    };
+    return colors[name] || "#7a7a9a";
+  }
+
+  // ── Helpers ──
+
   function highlightSearch(html: string, query: string): string {
     if (!query) return html;
     const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const regex = new RegExp(escapedQuery, "gi");
-    // Split by HTML tags, only highlight in text segments
     return html.replace(/(<[^>]*>)|([^<]+)/g, (segment, tag, text) => {
       if (tag) return tag;
-      return text.replace(regex, (match: string) => `<mark class="search-mark">${match}</mark>`);
+      return text.replace(regex, (matched: string) => `<mark class="search-mark">${matched}</mark>`);
     });
   }
 
@@ -23,13 +88,29 @@
     });
   }
 
+  function escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  // ── Markdown with code block IDs for copy buttons ──
+
+  let codeBlockCounter = 0;
+
   function renderMarkdown(text: string): string {
     let html = escapeHtml(text);
 
-    // Code blocks
+    // Code blocks — add wrapper with language label and copy button
     html = html.replace(
       /```(\w*)\n([\s\S]*?)```/g,
-      '<pre><code class="language-$1">$2</code></pre>'
+      (_match: string, lang: string, code: string) => {
+        const blockId = `cb-${codeBlockCounter++}`;
+        const langLabel = lang || "code";
+        const highlighted = lang ? highlightSyntax(code, lang) : code;
+        return `<div class="code-block-wrapper" data-code-id="${blockId}"><div class="code-block-header"><span class="code-lang">${langLabel}</span><button class="code-copy-btn" data-copy-target="${blockId}" title="Copy code">Copy</button></div><pre><code class="language-${lang}" id="${blockId}">${highlighted}</code></pre></div>`;
+      }
     );
 
     // Inline code
@@ -55,7 +136,6 @@
         let tableHtml = "<table>";
         let inBody = false;
         rows.forEach((row: string, rowIndex: number) => {
-          // Skip separator rows (e.g. |---|--------|-------|)
           if (/^\|[\s\-:|]+$/.test(row.trim())) return;
           const cells = row.split("|").slice(1, -1).map((cell: string) => cell.trim());
           if (rowIndex === 0) {
@@ -87,29 +167,75 @@
 
     // Clean up nesting issues
     html = html.replace(/<p>\s*<\/p>/g, "");
-    html = html.replace(/<p>(<(?:h[123]|table|ul|hr|pre))/g, "$1");
-    html = html.replace(/(<\/(?:h[123]|table|ul|hr|pre)>)<\/p>/g, "$1");
+    html = html.replace(/<p>(<(?:h[123]|table|ul|hr|pre|div))/g, "$1");
+    html = html.replace(/(<\/(?:h[123]|table|ul|hr|pre|div)>)<\/p>/g, "$1");
 
     return html;
   }
 
-  function escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+  // ── Basic syntax highlighting ──
+
+  function highlightSyntax(code: string, lang: string): string {
+    // Comments
+    if (["js", "ts", "javascript", "typescript", "jsx", "tsx", "rust", "go", "java", "c", "cpp", "swift"].includes(lang)) {
+      code = code.replace(/(\/\/[^\n]*)/g, '<span class="syn-comment">$1</span>');
+      code = code.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="syn-comment">$1</span>');
+    } else if (["py", "python", "ruby", "bash", "sh", "zsh", "yaml", "yml"].includes(lang)) {
+      code = code.replace(/(#[^\n]*)/g, '<span class="syn-comment">$1</span>');
+    }
+
+    // Strings (double and single quoted) — skip if already inside a span
+    code = code.replace(/(?<!<span[^>]*>.*?)(&quot;[^&]*?&quot;|&#x27;[^&]*?&#x27;|&amp;quot;.*?&amp;quot;)/g, '<span class="syn-string">$1</span>');
+    // Backtick template strings for JS/TS
+    if (["js", "ts", "javascript", "typescript", "jsx", "tsx"].includes(lang)) {
+      code = code.replace(/(`)([^`]*?)(`)/g, '<span class="syn-string">$1$2$3</span>');
+    }
+
+    // Keywords per language family
+    let keywords: string[] = [];
+    if (["js", "ts", "javascript", "typescript", "jsx", "tsx"].includes(lang)) {
+      keywords = ["const", "let", "var", "function", "return", "if", "else", "for", "while", "import", "export", "from", "class", "extends", "new", "async", "await", "try", "catch", "throw", "typeof", "interface", "type", "enum", "default", "switch", "case", "break", "continue", "true", "false", "null", "undefined", "this", "super"];
+    } else if (["py", "python"].includes(lang)) {
+      keywords = ["def", "class", "return", "if", "elif", "else", "for", "while", "import", "from", "as", "try", "except", "raise", "with", "yield", "lambda", "True", "False", "None", "in", "not", "and", "or", "is", "pass", "break", "continue", "self", "async", "await"];
+    } else if (["rust"].includes(lang)) {
+      keywords = ["fn", "let", "mut", "pub", "struct", "enum", "impl", "trait", "use", "mod", "if", "else", "for", "while", "loop", "match", "return", "self", "super", "crate", "where", "async", "await", "move", "true", "false", "Some", "None", "Ok", "Err"];
+    } else if (["bash", "sh", "zsh"].includes(lang)) {
+      keywords = ["if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "function", "return", "export", "local", "echo", "exit", "cd", "ls", "rm", "cp", "mv", "mkdir", "cat", "grep", "sed", "awk"];
+    }
+
+    if (keywords.length > 0) {
+      const keywordPattern = new RegExp(`\\b(${keywords.join("|")})\\b`, "g");
+      // Only highlight keywords not already inside a <span>
+      code = code.replace(/(<span[^>]*>[\s\S]*?<\/span>)|(\b(?:` + keywords.join("|") + `)\\b)/g,
+        (fullMatch: string, insideSpan: string, keyword: string) => {
+          if (insideSpan) return insideSpan;
+          if (keyword) return `<span class="syn-keyword">${keyword}</span>`;
+          return fullMatch;
+        }
+      );
+      // Simpler fallback if the above regex is too complex
+      void keywordPattern;
+    }
+
+    return code;
   }
 
-  function cleanUserText(text: string): string {
-    return text
-      .replace(/['"`]?\/[\w\-./]+['"`]?\s*/g, "")
-      .replace(/\s+/g, " ")
-      .trim() || text;
-  }
+  // ── Code copy handler (delegated click) ──
 
-  let displayText = $derived(
-    message.role === "user" ? cleanUserText(message.text) : message.text
-  );
+  function handleContentClick(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    if (target.classList.contains("code-copy-btn")) {
+      const codeId = target.getAttribute("data-copy-target");
+      if (codeId) {
+        const codeElement = document.getElementById(codeId);
+        if (codeElement) {
+          navigator.clipboard.writeText(codeElement.textContent || "");
+          target.textContent = "Copied!";
+          setTimeout(() => { target.textContent = "Copy"; }, 1500);
+        }
+      }
+    }
+  }
 
   let copied = $state(false);
 
@@ -142,9 +268,9 @@
     </div>
     <div class="user-bubble">
       {#if searchQuery}
-        <p>{@html highlightSearch(escapeHtml(displayText), searchQuery)}</p>
+        <p>{@html highlightSearch(escapeHtml(message.text), searchQuery)}</p>
       {:else}
-        <p>{displayText}</p>
+        <p>{message.text}</p>
       {/if}
       <button class="copy-btn" class:copied onclick={copyText} title="Copy message">
         {#if copied}
@@ -156,14 +282,40 @@
     </div>
   </div>
 {:else}
+  <!-- Assistant message: structured segments -->
   <div class="assistant-row">
     <div class="assistant-header">
       <span class="claude-icon">C</span>
       <span class="claude-label">Claude</span>
       <span class="timestamp">{formatTime(message.timestamp)}</span>
     </div>
-    <div class="assistant-content">
-      {@html searchQuery ? highlightSearch(renderMarkdown(message.text), searchQuery) : renderMarkdown(message.text)}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="assistant-content" onclick={handleContentClick}>
+      {#each assistantSegments as segment}
+        {#if segment.kind === "text"}
+          <div class="segment-text">
+            {@html searchQuery ? highlightSearch(renderMarkdown(segment.content), searchQuery) : renderMarkdown(segment.content)}
+          </div>
+        {:else if segment.kind === "tool"}
+          <div class="tool-pill" style="--tool-color: {toolColor(segment.name)}">
+            <span class="tool-name">{segment.name}</span>
+            {#if segment.summary}
+              <span class="tool-summary">{segment.summary}</span>
+            {/if}
+          </div>
+        {:else if segment.kind === "thinking"}
+          <details class="thinking-block">
+            <summary>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+              Thinking...
+            </summary>
+            <div class="thinking-content">
+              {@html renderMarkdown(segment.content)}
+            </div>
+          </details>
+        {/if}
+      {/each}
     </div>
   </div>
 {/if}
@@ -178,7 +330,7 @@
     border-radius: 2px;
   }
 
-  /* ── Compaction messages: collapsible divider ── */
+  /* ── Compaction messages ── */
 
   .compaction-row {
     margin: 28px 0;
@@ -233,15 +385,10 @@
     overflow-y: auto;
   }
 
-  .compaction-content :global(p) {
-    margin: 0 0 8px 0;
-  }
+  .compaction-content :global(p) { margin: 0 0 8px 0; }
+  .compaction-content :global(p:last-child) { margin-bottom: 0; }
 
-  .compaction-content :global(p:last-child) {
-    margin-bottom: 0;
-  }
-
-  /* ── User messages: right-aligned chat bubble ── */
+  /* ── User messages ── */
 
   .user-row {
     display: flex;
@@ -257,10 +404,7 @@
     margin-bottom: 6px;
   }
 
-  .user-meta .timestamp {
-    font-size: 11px;
-    color: #5a5a7a;
-  }
+  .user-meta .timestamp { font-size: 11px; color: #5a5a7a; }
 
   .role-tag {
     font-size: 11px;
@@ -276,16 +420,11 @@
     color: #d0d0e8;
     font-size: 14px;
     line-height: 1.5;
-  }
-
-  .user-bubble {
     position: relative;
     padding-right: 36px;
   }
 
-  .user-bubble p {
-    margin: 0;
-  }
+  .user-bubble p { margin: 0; }
 
   .copy-btn {
     position: absolute;
@@ -305,21 +444,11 @@
     transition: opacity 0.15s, color 0.15s, background 0.15s;
   }
 
-  .user-row:hover .copy-btn {
-    opacity: 1;
-  }
+  .user-row:hover .copy-btn { opacity: 1; }
+  .copy-btn:hover { background: rgba(255, 255, 255, 0.1); color: #c0c0d8; }
+  .copy-btn.copied { opacity: 1; color: #34d399; }
 
-  .copy-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #c0c0d8;
-  }
-
-  .copy-btn.copied {
-    opacity: 1;
-    color: #34d399;
-  }
-
-  /* ── Assistant messages: full-width left-aligned ── */
+  /* ── Assistant messages ── */
 
   .assistant-row {
     margin: 24px 0;
@@ -345,16 +474,8 @@
     color: white;
   }
 
-  .claude-label {
-    font-size: 13px;
-    font-weight: 600;
-    color: #34d399;
-  }
-
-  .assistant-header .timestamp {
-    font-size: 11px;
-    color: #5a5a7a;
-  }
+  .claude-label { font-size: 13px; font-weight: 600; color: #34d399; }
+  .assistant-header .timestamp { font-size: 11px; color: #5a5a7a; }
 
   .assistant-content {
     background: #16162a;
@@ -366,12 +487,137 @@
     border: 1px solid #1e1e36;
   }
 
-  .assistant-content :global(p) {
-    margin: 0 0 10px 0;
+  /* ── Segment: text ── */
+
+  .segment-text :global(p) { margin: 0 0 10px 0; }
+  .segment-text :global(p:last-child) { margin-bottom: 0; }
+  .segment-text + .segment-text { margin-top: 6px; }
+
+  /* ── Segment: tool pill ── */
+
+  .tool-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 0;
+    padding: 4px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+    max-width: 100%;
   }
 
-  .assistant-content :global(p:last-child) {
-    margin-bottom: 0;
+  .tool-name {
+    font-weight: 600;
+    color: var(--tool-color);
+    white-space: nowrap;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 11px;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+
+  .tool-summary {
+    color: #8a8aaa;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 11px;
+  }
+
+  /* ── Segment: thinking block ── */
+
+  .thinking-block {
+    margin: 8px 0;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    background: #12121e;
+  }
+
+  .thinking-block summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #7a7a9a;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .thinking-block summary:hover { color: #a0a0c0; }
+
+  .thinking-block summary svg {
+    color: #6366f1;
+    flex-shrink: 0;
+  }
+
+  .thinking-content {
+    padding: 0 12px 12px;
+    font-size: 13px;
+    color: #9a9ab8;
+    line-height: 1.6;
+    max-height: 400px;
+    overflow-y: auto;
+    border-top: 1px solid #2a2a4a;
+    padding-top: 10px;
+  }
+
+  .thinking-content :global(p) { margin: 0 0 8px 0; }
+  .thinking-content :global(p:last-child) { margin-bottom: 0; }
+
+  /* ── Code blocks with header ── */
+
+  .assistant-content :global(.code-block-wrapper) {
+    margin: 10px 0;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #1e1e36;
+  }
+
+  .assistant-content :global(.code-block-header) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background: #1a1a2e;
+    border-bottom: 1px solid #1e1e36;
+  }
+
+  .assistant-content :global(.code-lang) {
+    font-size: 11px;
+    color: #5a5a7a;
+    font-family: "SF Mono", "Fira Code", monospace;
+    text-transform: lowercase;
+  }
+
+  .assistant-content :global(.code-copy-btn) {
+    font-size: 11px;
+    color: #5a5a7a;
+    background: transparent;
+    border: 1px solid #2a2a4a;
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+
+  .assistant-content :global(.code-copy-btn:hover) {
+    color: #c0c0d8;
+    border-color: #4a4a6a;
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .assistant-content :global(.code-block-wrapper pre) {
+    margin: 0;
+    border: none;
+    border-radius: 0;
   }
 
   .assistant-content :global(pre) {
@@ -396,35 +642,24 @@
     color: #e0b0ff;
   }
 
+  /* ── Syntax highlighting ── */
+
+  .assistant-content :global(.syn-keyword) { color: #c792ea; }
+  .assistant-content :global(.syn-string) { color: #c3e88d; }
+  .assistant-content :global(.syn-comment) { color: #546e7a; font-style: italic; }
+
+  /* ── Standard markdown elements ── */
+
   .assistant-content :global(h1),
   .assistant-content :global(h2),
-  .assistant-content :global(h3) {
-    color: #e0e0f0;
-    margin: 16px 0 8px 0;
-  }
+  .assistant-content :global(h3) { color: #e0e0f0; margin: 16px 0 8px 0; }
 
-  .assistant-content :global(h1) {
-    font-size: 18px;
-  }
-  .assistant-content :global(h2) {
-    font-size: 16px;
-  }
-  .assistant-content :global(h3) {
-    font-size: 15px;
-  }
-
-  .assistant-content :global(strong) {
-    color: #e0e0f0;
-  }
-
-  .assistant-content :global(ul) {
-    margin: 6px 0;
-    padding-left: 22px;
-  }
-
-  .assistant-content :global(li) {
-    margin: 4px 0;
-  }
+  .assistant-content :global(h1) { font-size: 18px; }
+  .assistant-content :global(h2) { font-size: 16px; }
+  .assistant-content :global(h3) { font-size: 15px; }
+  .assistant-content :global(strong) { color: #e0e0f0; }
+  .assistant-content :global(ul) { margin: 6px 0; padding-left: 22px; }
+  .assistant-content :global(li) { margin: 4px 0; }
 
   .assistant-content :global(table) {
     border-collapse: collapse;
@@ -440,19 +675,7 @@
     text-align: left;
   }
 
-  .assistant-content :global(th) {
-    background: #1e1e36;
-    color: #e0e0f0;
-    font-weight: 600;
-  }
-
-  .assistant-content :global(td) {
-    background: #12121e;
-  }
-
-  .assistant-content :global(hr) {
-    border: none;
-    border-top: 1px solid #2a2a4a;
-    margin: 14px 0;
-  }
+  .assistant-content :global(th) { background: #1e1e36; color: #e0e0f0; font-weight: 600; }
+  .assistant-content :global(td) { background: #12121e; }
+  .assistant-content :global(hr) { border: none; border-top: 1px solid #2a2a4a; margin: 14px 0; }
 </style>

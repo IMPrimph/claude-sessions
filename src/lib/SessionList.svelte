@@ -181,6 +181,8 @@
     <input
       type="text"
       placeholder="Filter sessions..."
+      autocomplete="off"
+      spellcheck="false"
       bind:value={searchQuery}
     />
   </div>

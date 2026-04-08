@@ -16,6 +16,8 @@
   let messageSearchQuery = $state("");
   let matchedMessageIndices: number[] = $state([]);
   let currentMatchIndex = $state(0);
+  let showScrollTop = $state(false);
+  let showScrollBottom = $state(false);
 
   // Auto-scroll to top when session changes
   $effect(() => {
@@ -24,6 +26,22 @@
       messageSearchQuery = "";
     }
   });
+
+  function handleScroll() {
+    if (!scrollContainer) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
+    showScrollTop = scrollTop > 300;
+    showScrollBottom = scrollTop < scrollHeight - clientHeight - 300;
+  }
+
+  function scrollToTop() {
+    scrollContainer?.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function scrollToBottom() {
+    if (!scrollContainer) return;
+    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
+  }
 
   // Compute matched indices when search query changes
   $effect(() => {
@@ -215,21 +233,34 @@
       </div>
     {/if}
 
-    <div class="messages-container" bind:this={scrollContainer}>
-      {#if loading}
-        <div class="loading-state">Loading messages...</div>
-      {:else if messages.length === 0}
-        <div class="empty-messages">No messages found in this session</div>
-      {:else}
-        {#each messages as message, index (index)}
-          <div
-            data-msg-index={index}
-            class:search-highlight={messageSearchQuery && matchedMessageIndices.includes(index)}
-            class:search-active={messageSearchQuery && matchedMessageIndices[currentMatchIndex] === index}
-          >
-            <MessageBubble {message} searchQuery={messageSearchQuery} />
-          </div>
-        {/each}
+    <div class="messages-wrapper">
+      <div class="messages-container" bind:this={scrollContainer} onscroll={handleScroll}>
+        {#if loading}
+          <div class="loading-state">Loading messages...</div>
+        {:else if messages.length === 0}
+          <div class="empty-messages">No messages found in this session</div>
+        {:else}
+          {#each messages as message, index (index)}
+            <div
+              data-msg-index={index}
+              class:search-highlight={messageSearchQuery && matchedMessageIndices.includes(index)}
+              class:search-active={messageSearchQuery && matchedMessageIndices[currentMatchIndex] === index}
+            >
+              <MessageBubble {message} searchQuery={messageSearchQuery} />
+            </div>
+          {/each}
+        {/if}
+      </div>
+
+      {#if showScrollTop}
+        <button class="scroll-fab scroll-fab-top" onclick={scrollToTop} title="Scroll to top">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m18 15-6-6-6 6"/></svg>
+        </button>
+      {/if}
+      {#if showScrollBottom}
+        <button class="scroll-fab scroll-fab-bottom" onclick={scrollToBottom} title="Scroll to bottom">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
       {/if}
     </div>
   {/if}
@@ -364,10 +395,48 @@
     border-radius: 4px;
   }
 
-  .messages-container {
+  .messages-wrapper {
     flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .messages-container {
+    height: 100%;
     overflow-y: auto;
     padding: 16px 24px;
+  }
+
+  .scroll-fab {
+    position: absolute;
+    right: 20px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: #1e1e36;
+    border: 1px solid #2a2a4a;
+    color: #a0a0c0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    transition: all 0.15s;
+    z-index: 10;
+  }
+
+  .scroll-fab:hover {
+    background: #2a2a4a;
+    color: #e0e0f0;
+    border-color: #6366f1;
+  }
+
+  .scroll-fab-top {
+    top: 12px;
+  }
+
+  .scroll-fab-bottom {
+    bottom: 12px;
   }
 
   .loading-state,

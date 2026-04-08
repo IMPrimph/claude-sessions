@@ -69,6 +69,8 @@ struct JsonlEntry {
     entry_type: Option<String>,
     #[serde(rename = "isSidechain")]
     is_sidechain: Option<bool>,
+    #[serde(rename = "isMeta")]
+    is_meta: Option<bool>,
     #[serde(rename = "toolUseResult")]
     tool_use_result: Option<Value>,
     #[serde(rename = "customTitle")]
@@ -77,12 +79,14 @@ struct JsonlEntry {
     is_compact_summary: Option<bool>,
     message: Option<JsonlMessage>,
     timestamp: Option<String>,
+    #[serde(rename = "requestId")]
+    request_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct JsonlMessage {
     content: Option<Value>,
-    stop_reason: Option<Value>,
+    model: Option<String>,
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────
@@ -271,15 +275,17 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
                     for entry in index_data.entries {
                         // Always construct path from project dir + session ID
                         // because fullPath in the index is often stale
-                        let jsonl_path = project_dir
-                            .join(format!("{}.jsonl", entry.session_id))
-                            .to_string_lossy()
-                            .to_string();
+                        let jsonl_pathbuf = project_dir
+                            .join(format!("{}.jsonl", entry.session_id));
+                        let jsonl_path = jsonl_pathbuf.to_string_lossy().to_string();
 
                         // Skip sessions whose JSONL files no longer exist
-                        if !PathBuf::from(&jsonl_path).exists() {
+                        if !jsonl_pathbuf.exists() {
                             continue;
                         }
+
+                        // Prefer file mtime over index modified (index can be stale)
+                        let file_modified = get_file_mtime_iso(&jsonl_pathbuf);
 
                         sessions.push(SessionInfo {
                             session_id: entry.session_id,
@@ -288,7 +294,7 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
                             project_path: original_path.clone(),
                             project_name: project_name.clone(),
                             created: entry.created,
-                            modified: entry.modified,
+                            modified: file_modified.or(entry.modified),
                             message_count: entry.message_count,
                             conversation_count: 0,
                             total_tokens: 0,
@@ -321,6 +327,7 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
                             }
 
                             let metadata = extract_quick_metadata(&file_path);
+                            let file_modified = get_file_mtime_iso(&file_path);
 
                             sessions.push(SessionInfo {
                                 session_id,
@@ -329,7 +336,7 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
                                 project_path: original_path.clone(),
                                 project_name: project_name.clone(),
                                 created: metadata.first_timestamp,
-                                modified: metadata.last_timestamp,
+                                modified: file_modified.or(metadata.last_timestamp),
                                 message_count: None,
                                 conversation_count: metadata.conversation_count,
                                 total_tokens: metadata.total_tokens,
@@ -362,6 +369,7 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
                         .to_string();
 
                     let metadata = extract_quick_metadata(&file_path);
+                    let file_modified = get_file_mtime_iso(&file_path);
 
                     sessions.push(SessionInfo {
                         session_id,
@@ -370,7 +378,7 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
                         project_path: decoded_path.clone(),
                         project_name: project_name.clone(),
                         created: metadata.first_timestamp,
-                        modified: metadata.last_timestamp,
+                        modified: file_modified.or(metadata.last_timestamp),
                         message_count: None,
                         conversation_count: metadata.conversation_count,
                         total_tokens: metadata.total_tokens,
@@ -601,10 +609,10 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
         fs::File::open(&path).map_err(|open_error| format!("Cannot open file: {}", open_error))?;
     let reader = BufReader::new(file);
 
-    let mut messages: Vec<ConversationMessage> = Vec::new();
-    let mut current_assistant_text = String::new();
-    let mut current_assistant_timestamp = String::new();
-    let mut in_assistant_turn = false;
+    // First pass: parse all entries and deduplicate by requestId
+    let mut entries: Vec<JsonlEntry> = Vec::new();
+    let mut last_index_by_request: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for line in reader.lines() {
         let line = match line {
@@ -614,12 +622,25 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
         if line.is_empty() {
             continue;
         }
-
         let entry: JsonlEntry = match serde_json::from_str(&line) {
             Ok(parsed) => parsed,
             Err(_) => continue,
         };
 
+        let index = entries.len();
+        if let Some(ref request_id) = entry.request_id {
+            last_index_by_request.insert(request_id.clone(), index);
+        }
+        entries.push(entry);
+    }
+
+    // Second pass: build messages with proper filtering
+    let mut messages: Vec<ConversationMessage> = Vec::new();
+    let mut current_assistant_text = String::new();
+    let mut current_assistant_timestamp = String::new();
+    let mut in_assistant_turn = false;
+
+    for (entry_index, entry) in entries.iter().enumerate() {
         let entry_type = match &entry.entry_type {
             Some(entry_type) => entry_type.as_str(),
             None => continue,
@@ -630,49 +651,94 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
             continue;
         }
 
+        // Skip synthetic messages
+        if let Some(ref message) = entry.message {
+            if let Some(ref model) = message.model {
+                if model == "<synthetic>" {
+                    continue;
+                }
+            }
+        }
+
+        // Skip noise entry types
+        match entry_type {
+            "system" | "summary" | "file-history-snapshot" | "queue-operation" => continue,
+            _ => {}
+        }
+
+        // Deduplicate assistant streaming entries: skip all but last per requestId
+        if entry_type == "assistant" {
+            if let Some(ref request_id) = entry.request_id {
+                if let Some(&last_index) = last_index_by_request.get(request_id) {
+                    if entry_index != last_index {
+                        continue;
+                    }
+                }
+            }
+        }
+
         match entry_type {
             "user" => {
-                // Flush any pending assistant text
-                if in_assistant_turn && !current_assistant_text.is_empty() {
-                    messages.push(ConversationMessage {
-                        role: "assistant".to_string(),
-                        text: current_assistant_text.clone(),
-                        timestamp: current_assistant_timestamp.clone(),
-                    });
-                    current_assistant_text.clear();
-                    in_assistant_turn = false;
+                // Compaction summaries are special
+                if entry.is_compact_summary.unwrap_or(false) {
+                    // Flush pending assistant text first
+                    flush_assistant(&mut messages, &mut current_assistant_text,
+                        &mut current_assistant_timestamp, &mut in_assistant_turn);
+
+                    let text = extract_user_text(&entry.message);
+                    if !text.is_empty() {
+                        messages.push(ConversationMessage {
+                            role: "compaction".to_string(),
+                            text,
+                            timestamp: entry.timestamp.clone().unwrap_or_default(),
+                        });
+                    }
+                    continue;
                 }
 
-                // Skip tool results — only show actual human messages
+                // Skip meta messages (tool results, internal flow)
+                if entry.is_meta.unwrap_or(false) {
+                    continue;
+                }
+
+                // Skip entries with toolUseResult
                 if entry.tool_use_result.is_some() {
                     continue;
                 }
 
-                let timestamp = entry.timestamp.unwrap_or_default();
-                let text = extract_user_text(&entry.message);
-
-                if !text.is_empty() {
-                    let role = if entry.is_compact_summary.unwrap_or(false) {
-                        "compaction"
-                    } else {
-                        "user"
-                    };
-                    messages.push(ConversationMessage {
-                        role: role.to_string(),
-                        text,
-                        timestamp,
-                    });
+                // Check if content is an array with tool_result blocks — these are
+                // tool responses or interruptions, not real user input
+                if is_tool_result_content(&entry.message) {
+                    continue;
                 }
+
+                let text = extract_user_text(&entry.message);
+                let cleaned = strip_system_tags(&text);
+
+                if cleaned.is_empty() {
+                    continue;
+                }
+
+                // Flush pending assistant text before user message
+                flush_assistant(&mut messages, &mut current_assistant_text,
+                    &mut current_assistant_timestamp, &mut in_assistant_turn);
+
+                messages.push(ConversationMessage {
+                    role: "user".to_string(),
+                    text: cleaned,
+                    timestamp: entry.timestamp.clone().unwrap_or_default(),
+                });
             }
             "assistant" => {
-                let timestamp = entry.timestamp.unwrap_or_default();
+                let timestamp = entry.timestamp.clone().unwrap_or_default();
 
                 if !in_assistant_turn {
                     in_assistant_turn = true;
                     current_assistant_timestamp = timestamp;
                 }
 
-                // Extract text blocks from assistant content
+                // Accumulate all assistant content — only flush when
+                // the next real user message arrives (handled above)
                 if let Some(message) = &entry.message {
                     let text_parts = extract_assistant_text(&message.content);
                     if !text_parts.is_empty() {
@@ -681,33 +747,13 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
                         }
                         current_assistant_text.push_str(&text_parts);
                     }
-
-                    // Check if this is the final chunk of the assistant turn
-                    let is_end = match &message.stop_reason {
-                        Some(Value::String(reason)) => {
-                            reason == "end_turn" || reason == "tool_use"
-                        }
-                        _ => false,
-                    };
-
-                    if is_end && !current_assistant_text.is_empty() {
-                        messages.push(ConversationMessage {
-                            role: "assistant".to_string(),
-                            text: current_assistant_text.clone(),
-                            timestamp: current_assistant_timestamp.clone(),
-                        });
-                        current_assistant_text.clear();
-                        in_assistant_turn = false;
-                    }
                 }
             }
-            _ => {
-                // Skip permission-mode, file-history-snapshot, attachment, system, etc.
-            }
+            _ => {}
         }
     }
 
-    // Flush any remaining assistant text
+    // Flush remaining assistant text
     if in_assistant_turn && !current_assistant_text.is_empty() {
         messages.push(ConversationMessage {
             role: "assistant".to_string(),
@@ -717,6 +763,113 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
     }
 
     Ok(messages)
+}
+
+fn flush_assistant(
+    messages: &mut Vec<ConversationMessage>,
+    current_text: &mut String,
+    current_timestamp: &mut String,
+    in_turn: &mut bool,
+) {
+    if *in_turn && !current_text.is_empty() {
+        messages.push(ConversationMessage {
+            role: "assistant".to_string(),
+            text: current_text.clone(),
+            timestamp: current_timestamp.clone(),
+        });
+        current_text.clear();
+        *in_turn = false;
+    }
+}
+
+/// Check if user message content is an array containing tool_result blocks
+/// (these are tool responses, not real user input)
+fn is_tool_result_content(message: &Option<JsonlMessage>) -> bool {
+    match message {
+        Some(msg) => match &msg.content {
+            Some(Value::Array(blocks)) => {
+                blocks.iter().any(|block| {
+                    block.get("type").and_then(|block_type| block_type.as_str())
+                        == Some("tool_result")
+                })
+            }
+            _ => false,
+        },
+        None => false,
+    }
+}
+
+/// Strip system/meta tags and ANSI escape sequences that shouldn't be displayed
+fn strip_system_tags(text: &str) -> String {
+    let mut result = text.to_string();
+
+    // Remove paired tags — content between open and close is removed entirely
+    let remove_tags = [
+        "system-reminder",
+        "local-command-caveat",
+        "local-command-stdout",
+        "local-command-stderr",
+        "command-args",
+    ];
+    for tag in remove_tags {
+        let open = format!("<{}>", tag);
+        let close = format!("</{}>", tag);
+        while let Some(start) = result.find(&open) {
+            if let Some(end) = result.find(&close) {
+                let tag_end = end + close.len();
+                result = format!("{}{}", &result[..start], &result[tag_end..]);
+            } else {
+                result = result[..start].to_string();
+                break;
+            }
+        }
+    }
+
+    // Clean <command-name>...</command-name> → keep just the inner text
+    while let Some(start) = result.find("<command-name>") {
+        let content_start = start + "<command-name>".len();
+        if let Some(end_offset) = result[content_start..].find("</command-name>") {
+            let command_name = result[content_start..content_start + end_offset].to_string();
+            let tag_end = content_start + end_offset + "</command-name>".len();
+            result = format!("{}{}{}", &result[..start], command_name, &result[tag_end..]);
+        } else {
+            break;
+        }
+    }
+
+    // Clean <command-message>...</command-message> → keep just the inner text
+    while let Some(start) = result.find("<command-message>") {
+        let content_start = start + "<command-message>".len();
+        if let Some(end_offset) = result[content_start..].find("</command-message>") {
+            let inner = result[content_start..content_start + end_offset].to_string();
+            let tag_end = content_start + end_offset + "</command-message>".len();
+            result = format!("{}{}{}", &result[..start], inner, &result[tag_end..]);
+        } else {
+            break;
+        }
+    }
+
+    // Strip ANSI escape sequences (e.g. \x1b[2m, \x1b[22m, \x1b[0m)
+    let mut cleaned = String::with_capacity(result.len());
+    let bytes = result.as_bytes();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        if bytes[cursor] == 0x1b && cursor + 1 < bytes.len() && bytes[cursor + 1] == b'[' {
+            // Skip until we find a letter that terminates the escape sequence
+            cursor += 2;
+            while cursor < bytes.len() && !bytes[cursor].is_ascii_alphabetic() {
+                cursor += 1;
+            }
+            if cursor < bytes.len() {
+                cursor += 1; // skip the terminating letter
+            }
+        } else {
+            cleaned.push(bytes[cursor] as char);
+            cursor += 1;
+        }
+    }
+
+    cleaned.trim().to_string()
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -731,6 +884,67 @@ fn get_claude_projects_dir() -> Result<PathBuf, String> {
         ));
     }
     Ok(claude_projects)
+}
+
+fn get_file_mtime_iso(path: &PathBuf) -> Option<String> {
+    let metadata = path.metadata().ok()?;
+    let modified = metadata.modified().ok()?;
+    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let secs = duration.as_secs();
+    let millis = duration.subsec_millis();
+    // Format as ISO 8601 UTC
+    let datetime = chrono_minimal_utc(secs, millis);
+    Some(datetime)
+}
+
+fn chrono_minimal_utc(epoch_secs: u64, millis: u32) -> String {
+    let secs_per_day: u64 = 86400;
+    let days = epoch_secs / secs_per_day;
+    let day_secs = (epoch_secs % secs_per_day) as u32;
+    let hours = day_secs / 3600;
+    let minutes = (day_secs % 3600) / 60;
+    let seconds = day_secs % 60;
+
+    // Days since Unix epoch to Y-M-D (simplified Gregorian)
+    let mut remaining_days = days as i64;
+    let mut year: i64 = 1970;
+    loop {
+        let days_in_year: i64 = if is_leap_year(year) { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+    let month_days: [i64; 12] = if is_leap_year(year) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut month: usize = 0;
+    for (month_index, &days_count) in month_days.iter().enumerate() {
+        if remaining_days < days_count {
+            month = month_index;
+            break;
+        }
+        remaining_days -= days_count;
+    }
+    let day = remaining_days + 1;
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        year,
+        month + 1,
+        day,
+        hours,
+        minutes,
+        seconds,
+        millis
+    )
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 fn decode_project_path(encoded: &str) -> String {
@@ -769,10 +983,27 @@ fn extract_assistant_text(content: &Option<Value>) -> String {
             let mut parts = Vec::new();
             for block in blocks {
                 if let Some(block_type) = block.get("type").and_then(|block_type| block_type.as_str()) {
-                    if block_type == "text" {
-                        if let Some(text) = block.get("text").and_then(|text| text.as_str()) {
-                            parts.push(text.to_string());
+                    match block_type {
+                        "text" => {
+                            if let Some(text) = block.get("text").and_then(|text| text.as_str()) {
+                                parts.push(text.to_string());
+                            }
                         }
+                        "tool_use" => {
+                            if let Some(formatted) = format_tool_use(block) {
+                                parts.push(formatted);
+                            }
+                        }
+                        "thinking" => {
+                            if let Some(thinking) = block.get("thinking").and_then(|val| val.as_str()) {
+                                if !thinking.is_empty() {
+                                    // Escape any accidental marker sequences in thinking content
+                                    let safe_content = thinking.replace("{{THINKING_END}}", "");
+                                    parts.push(format!("{{{{THINKING_START}}}}\n{}\n{{{{THINKING_END}}}}", safe_content));
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -780,6 +1011,57 @@ fn extract_assistant_text(content: &Option<Value>) -> String {
         }
         _ => String::new(),
     }
+}
+
+fn format_tool_use(block: &Value) -> Option<String> {
+    let tool_name = block.get("name").and_then(|name| name.as_str())?;
+    let input = block.get("input")?;
+
+    let summary = match tool_name {
+        "Read" | "read" => {
+            let path = input.get("file_path").and_then(|path| path.as_str()).unwrap_or("unknown");
+            path.to_string()
+        }
+        "Write" | "write" => {
+            let path = input.get("file_path").and_then(|path| path.as_str()).unwrap_or("unknown");
+            path.to_string()
+        }
+        "Edit" | "edit" => {
+            let path = input.get("file_path").and_then(|path| path.as_str()).unwrap_or("unknown");
+            path.to_string()
+        }
+        "Bash" | "bash" => {
+            let command = input.get("command").and_then(|cmd| cmd.as_str()).unwrap_or("");
+            let truncated: String = command.chars().take(200).collect();
+            truncated
+        }
+        "Grep" | "grep" => {
+            let pattern = input.get("pattern").and_then(|pat| pat.as_str()).unwrap_or("");
+            let path = input.get("path").and_then(|path| path.as_str()).unwrap_or(".");
+            format!("{} in {}", pattern, path)
+        }
+        "Glob" | "glob" => {
+            let pattern = input.get("pattern").and_then(|pat| pat.as_str()).unwrap_or("");
+            pattern.to_string()
+        }
+        "Agent" | "agent" => {
+            let description = input.get("description").and_then(|desc| desc.as_str()).unwrap_or("subagent");
+            description.to_string()
+        }
+        "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" => {
+            let subject = input.get("subject").and_then(|subj| subj.as_str()).unwrap_or("");
+            subject.to_string()
+        }
+        "Skill" | "skill" => {
+            let skill_name = input.get("skill").and_then(|skill| skill.as_str()).unwrap_or("");
+            skill_name.to_string()
+        }
+        _ => String::new(),
+    };
+
+    // Escape pipe in summary to avoid breaking the marker format
+    let safe_summary = summary.replace('|', "/");
+    Some(format!("{{{{TOOL:{}|{}}}}}", tool_name, safe_summary))
 }
 
 struct SessionQuickMetadata {
@@ -885,8 +1167,7 @@ fn extract_quick_metadata(jsonl_path: &PathBuf) -> SessionQuickMetadata {
 
     let total_tokens: u64 = token_by_request.values().sum();
 
-    // ── Pass 3: Fast conversation count via string matching ────────────
-    // Avoid full JSON parse — just count lines that look like user messages
+    // ── Pass 3: Full-file string scan for conversation count + custom title ──
     let count_file = match fs::File::open(jsonl_path) {
         Ok(file) => file,
         Err(_) => return empty,
@@ -895,7 +1176,19 @@ fn extract_quick_metadata(jsonl_path: &PathBuf) -> SessionQuickMetadata {
     let mut conversation_count: u64 = 0;
 
     for line in count_reader.lines().flatten() {
-        // Fast string checks before any JSON parsing
+        // Pick up custom-title entries anywhere in the file (they can appear
+        // after /rename, which may be far past the first 100 lines and before
+        // the last 128KB)
+        if line.contains("\"type\":\"custom-title\"") {
+            if let Ok(entry) = serde_json::from_str::<JsonlEntry>(&line) {
+                if let Some(title) = entry.custom_title {
+                    custom_title = Some(title);
+                }
+            }
+            continue;
+        }
+
+        // Fast string checks for user message counting
         if !line.contains("\"type\":\"user\"") {
             continue;
         }
