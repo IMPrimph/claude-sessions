@@ -1,5 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { check, type Update } from "@tauri-apps/plugin-updater";
+  import { relaunch } from "@tauri-apps/plugin-process";
   import type {
     ProjectInfo,
     SessionInfo,
@@ -148,10 +150,68 @@
     }
   }
 
+  // ── Auto-updater ─────────────────────────────────────────
+
+  let pendingUpdate: Update | null = $state(null);
+  let updateInstalling = $state(false);
+  let updateError = $state("");
+
+  async function checkForUpdates() {
+    try {
+      const update = await check();
+      if (update) {
+        pendingUpdate = update;
+      }
+    } catch (checkError) {
+      console.error("Update check failed:", checkError);
+    }
+  }
+
+  async function installUpdate() {
+    if (!pendingUpdate || updateInstalling) return;
+    updateInstalling = true;
+    updateError = "";
+    try {
+      await pendingUpdate.downloadAndInstall();
+      await relaunch();
+    } catch (installError) {
+      console.error("Update install failed:", installError);
+      updateError = String(installError);
+      updateInstalling = false;
+    }
+  }
+
+  function dismissUpdate() {
+    pendingUpdate = null;
+  }
+
   $effect(() => {
     loadProjects();
+    checkForUpdates();
   });
 </script>
+
+{#if pendingUpdate}
+  <div class="update-banner">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="7 10 12 15 17 10"/>
+      <line x1="12" y1="15" x2="12" y2="3"/>
+    </svg>
+    <span class="update-text">
+      Update available: <strong>v{pendingUpdate.version}</strong>
+      {#if updateError}
+        <span class="update-error">— {updateError}</span>
+      {/if}
+    </span>
+    <button class="update-btn primary" onclick={installUpdate} disabled={updateInstalling}>
+      {#if updateInstalling}Installing...{:else}Install & Restart{/if}
+    </button>
+    <button class="update-btn ghost" onclick={dismissUpdate} disabled={updateInstalling} title="Dismiss">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+{/if}
 
 <main>
   {#if initialLoading}
@@ -231,6 +291,77 @@
   main {
     height: 100vh;
     width: 100vw;
+  }
+
+  .update-banner {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px 8px 14px;
+    background: linear-gradient(135deg, #1e1e3a, #16162a);
+    border: 1px solid #6366f1;
+    border-radius: 10px;
+    box-shadow: 0 10px 40px rgba(99, 102, 241, 0.25);
+    color: #e0e0f0;
+    font-size: 13px;
+    max-width: 90%;
+  }
+
+  .update-banner svg {
+    color: #818cf8;
+    flex-shrink: 0;
+  }
+
+  .update-text {
+    white-space: nowrap;
+  }
+
+  .update-error {
+    color: #f87171;
+    margin-left: 6px;
+  }
+
+  .update-btn {
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    transition: all 0.15s;
+  }
+
+  .update-btn.primary {
+    background: #6366f1;
+    color: white;
+  }
+
+  .update-btn.primary:hover:not(:disabled) {
+    background: #818cf8;
+  }
+
+  .update-btn.primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .update-btn.ghost {
+    background: transparent;
+    color: #8a8aaa;
+    padding: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .update-btn.ghost:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.05);
+    color: #e0e0f0;
   }
 
   .loading-screen {
