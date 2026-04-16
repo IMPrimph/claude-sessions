@@ -12,6 +12,7 @@ pub fn run() {
             commands::get_session_messages,
             commands::get_session_tokens,
             commands::global_search,
+            commands::get_image_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

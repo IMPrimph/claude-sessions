@@ -1,7 +1,98 @@
 <script lang="ts">
+  import { invoke, convertFileSrc } from "@tauri-apps/api/core";
   import type { ConversationMessage } from "./types";
 
-  let { message, searchQuery = "" }: { message: ConversationMessage; searchQuery?: string } = $props();
+  let {
+    message,
+    searchQuery = "",
+    sessionId = "",
+    onImageOpen,
+  }: {
+    message: ConversationMessage;
+    searchQuery?: string;
+    sessionId?: string;
+    onImageOpen?: (url: string, label: string) => void;
+  } = $props();
+
+  // ── Image references ──
+
+  type UserSegment =
+    | { kind: "text"; content: string }
+    | { kind: "image"; number: number; url: string | null };
+
+  let cacheImageUrls = $state(new Map<number, string | null>());
+
+  async function loadCachedImageUrl(imageNumber: number) {
+    if (!sessionId || cacheImageUrls.has(imageNumber)) return;
+    try {
+      const path = await invoke<string | null>("get_image_path", {
+        sessionId,
+        imageNumber,
+      });
+      const assetUrl = path ? convertFileSrc(path) : null;
+      cacheImageUrls = new Map(cacheImageUrls).set(imageNumber, assetUrl);
+    } catch {
+      cacheImageUrls = new Map(cacheImageUrls).set(imageNumber, null);
+    }
+  }
+
+  function resolveImageUrl(imageNumber: number): string | null {
+    // Prefer the inline base64 data URL from the message itself
+    const inline = message.images?.find((image) => image.number === imageNumber);
+    if (inline) return inline.data_url;
+    // Fall back to the disk cache (~/.claude/image-cache/<session>/<N>.png)
+    return cacheImageUrls.get(imageNumber) ?? null;
+  }
+
+  function parseUserSegments(text: string): UserSegment[] {
+    const segments: UserSegment[] = [];
+    const imageRefRegex = /\[Image\s*#(\d+)\]|\[Image:\s*source:\s*([^\]]+)\]/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = imageRefRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        const preceding = text.slice(lastIndex, match.index);
+        if (preceding.trim()) segments.push({ kind: "text", content: preceding });
+      }
+
+      if (match[1]) {
+        const imageNumber = parseInt(match[1], 10);
+        let url = resolveImageUrl(imageNumber);
+        if (!url) loadCachedImageUrl(imageNumber);
+        segments.push({ kind: "image", number: imageNumber, url });
+      } else if (match[2]) {
+        const directPath = match[2].trim();
+        const match2 = directPath.match(/(\d+)\.(png|jpg|jpeg|gif|webp)$/i);
+        const imageNumber = match2 ? parseInt(match2[1], 10) : -1;
+        const assetUrl = convertFileSrc(directPath);
+        segments.push({ kind: "image", number: imageNumber, url: assetUrl });
+      }
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    if (lastIndex < text.length) {
+      const trailing = text.slice(lastIndex);
+      if (trailing.trim()) segments.push({ kind: "text", content: trailing });
+    }
+
+    return segments;
+  }
+
+  let userSegments = $derived(
+    message.role === "user" ? parseUserSegments(message.text) : []
+  );
+
+  // Extra images attached to this user message that weren't referenced in text
+  let extraImages = $derived.by(() => {
+    if (message.role !== "user" || !message.images) return [];
+    const refsInText = new Set<number>();
+    for (const segment of userSegments) {
+      if (segment.kind === "image") refsInText.add(segment.number);
+    }
+    return message.images.filter((image) => !refsInText.has(image.number));
+  });
 
   // ── Segment types for structured assistant rendering ──
 
@@ -95,21 +186,20 @@
       .replace(/>/g, "&gt;");
   }
 
-  // ── Markdown with code block IDs for copy buttons ──
-
-  let codeBlockCounter = 0;
+  // ── Markdown rendering ──
 
   function renderMarkdown(text: string): string {
     let html = escapeHtml(text);
 
-    // Code blocks — add wrapper with language label and copy button
+    // Code blocks — wrapper with language label and copy button. The copy button
+    // finds its sibling <code> via DOM traversal (handleContentClick) so there
+    // are no IDs to collide across messages or re-renders.
     html = html.replace(
       /```(\w*)\n([\s\S]*?)```/g,
       (_match: string, lang: string, code: string) => {
-        const blockId = `cb-${codeBlockCounter++}`;
         const langLabel = lang || "code";
         const highlighted = lang ? highlightSyntax(code, lang) : code;
-        return `<div class="code-block-wrapper" data-code-id="${blockId}"><div class="code-block-header"><span class="code-lang">${langLabel}</span><button class="code-copy-btn" data-copy-target="${blockId}" title="Copy code">Copy</button></div><pre><code class="language-${lang}" id="${blockId}">${highlighted}</code></pre></div>`;
+        return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-lang">${langLabel}</span><button type="button" class="code-copy-btn" title="Copy code">Copy</button></div><pre><code class="language-${lang}">${highlighted}</code></pre></div>`;
       }
     );
 
@@ -204,17 +294,16 @@
     }
 
     if (keywords.length > 0) {
-      const keywordPattern = new RegExp(`\\b(${keywords.join("|")})\\b`, "g");
-      // Only highlight keywords not already inside a <span>
-      code = code.replace(/(<span[^>]*>[\s\S]*?<\/span>)|(\b(?:` + keywords.join("|") + `)\\b)/g,
-        (fullMatch: string, insideSpan: string, keyword: string) => {
-          if (insideSpan) return insideSpan;
-          if (keyword) return `<span class="syn-keyword">${keyword}</span>`;
-          return fullMatch;
-        }
+      // Match either an existing <span>...</span> (to skip) or a bare keyword to wrap.
+      const combined = new RegExp(
+        `(<span[^>]*>[\\s\\S]*?<\\/span>)|\\b(${keywords.join("|")})\\b`,
+        "g"
       );
-      // Simpler fallback if the above regex is too complex
-      void keywordPattern;
+      code = code.replace(combined, (fullMatch, insideSpan, keyword) => {
+        if (insideSpan) return insideSpan;
+        if (keyword) return `<span class="syn-keyword">${keyword}</span>`;
+        return fullMatch;
+      });
     }
 
     return code;
@@ -224,17 +313,17 @@
 
   function handleContentClick(event: MouseEvent) {
     const target = event.target as HTMLElement;
-    if (target.classList.contains("code-copy-btn")) {
-      const codeId = target.getAttribute("data-copy-target");
-      if (codeId) {
-        const codeElement = document.getElementById(codeId);
-        if (codeElement) {
-          navigator.clipboard.writeText(codeElement.textContent || "");
-          target.textContent = "Copied!";
-          setTimeout(() => { target.textContent = "Copy"; }, 1500);
-        }
-      }
-    }
+    if (!target.classList.contains("code-copy-btn")) return;
+
+    const wrapper = target.closest(".code-block-wrapper");
+    const codeElement = wrapper?.querySelector("pre code");
+    if (!codeElement) return;
+
+    navigator.clipboard.writeText(codeElement.textContent || "");
+    target.textContent = "Copied!";
+    setTimeout(() => {
+      target.textContent = "Copy";
+    }, 1500);
   }
 
   let copied = $state(false);
@@ -267,11 +356,42 @@
       <span class="role-tag">You</span>
     </div>
     <div class="user-bubble">
-      {#if searchQuery}
-        <p>{@html highlightSearch(escapeHtml(message.text), searchQuery)}</p>
-      {:else}
-        <p>{message.text}</p>
-      {/if}
+      {#each userSegments as segment}
+        {#if segment.kind === "text"}
+          {#if searchQuery}
+            <p>{@html highlightSearch(escapeHtml(segment.content), searchQuery)}</p>
+          {:else}
+            <p>{segment.content}</p>
+          {/if}
+        {:else if segment.kind === "image"}
+          {@const resolvedUrl = segment.url ?? resolveImageUrl(segment.number)}
+          {#if resolvedUrl}
+            <button
+              type="button"
+              class="user-image-link"
+              title="Open image #{segment.number}"
+              onclick={() => onImageOpen?.(resolvedUrl, `Image #${segment.number}`)}
+            >
+              <img src={resolvedUrl} alt="Image #{segment.number}" class="user-image" loading="lazy" />
+            </button>
+          {:else}
+            <span class="image-missing" title="Image not found in cache">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+              Image #{segment.number}
+            </span>
+          {/if}
+        {/if}
+      {/each}
+      {#each extraImages as extra}
+        <button
+          type="button"
+          class="user-image-link"
+          title="Image #{extra.number}"
+          onclick={() => onImageOpen?.(extra.data_url, `Image #${extra.number}`)}
+        >
+          <img src={extra.data_url} alt="Image #{extra.number}" class="user-image" loading="lazy" />
+        </button>
+      {/each}
       <button class="copy-btn" class:copied onclick={copyText} title="Copy message">
         {#if copied}
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
@@ -422,9 +542,56 @@
     line-height: 1.5;
     position: relative;
     padding-right: 36px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: pre-wrap;
   }
 
-  .user-bubble p { margin: 0; }
+  .user-bubble p {
+    margin: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .user-bubble p + p { margin-top: 6px; }
+
+  .user-image-link {
+    display: inline-block;
+    margin: 6px 6px 0 0;
+    padding: 0;
+    background: transparent;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+  }
+
+  .user-image-link:hover {
+    border-color: #6366f1;
+    transform: scale(1.02);
+  }
+
+  .user-image {
+    display: block;
+    max-width: 180px;
+    max-height: 180px;
+    object-fit: cover;
+  }
+
+  .image-missing {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin: 6px 6px 0 0;
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px dashed rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    font-size: 11px;
+    color: #8a8aaa;
+  }
+
+  .image-missing svg { color: #6a6a8a; }
 
   .copy-btn {
     position: absolute;

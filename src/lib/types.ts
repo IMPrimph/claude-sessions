@@ -33,8 +33,14 @@ export interface GlobalSearchResult {
   jsonl_path: string;
 }
 
+export interface MessageImage {
+  number: number;
+  data_url: string;
+}
+
 export interface ConversationMessage {
   role: "user" | "assistant" | "compaction";
   text: string;
   timestamp: string;
+  images?: MessageImage[];
 }

@@ -37,6 +37,14 @@ pub struct ConversationMessage {
     pub role: String, // "user" or "assistant"
     pub text: String,
     pub timestamp: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<MessageImage>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct MessageImage {
+    pub number: u32,
+    pub data_url: String,
 }
 
 // ── Internal types for parsing JSONL ────────────────────────────────────────
@@ -90,6 +98,25 @@ struct JsonlMessage {
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────
+
+/// Returns the absolute path to a session's pasted image, if it exists.
+/// Claude Code caches pasted images at ~/.claude/image-cache/<session_id>/<N>.<ext>
+#[tauri::command]
+pub fn get_image_path(session_id: String, image_number: u32) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let base = home
+        .join(".claude")
+        .join("image-cache")
+        .join(&session_id);
+
+    for extension in ["png", "jpg", "jpeg", "gif", "webp"] {
+        let path = base.join(format!("{}.{}", image_number, extension));
+        if path.exists() {
+            return Some(path.to_string_lossy().to_string());
+        }
+    }
+    None
+}
 
 #[tauri::command]
 pub fn get_projects() -> Result<Vec<ProjectInfo>, String> {
@@ -474,12 +501,19 @@ pub fn global_search(query: String) -> Result<Vec<GlobalSearchResult>, String> {
             // Check if session name matches
             let name_lower = session_name.to_lowercase();
             if query_words.iter().all(|word| name_lower.contains(word)) {
+                // For name matches, use first_prompt as the preview context (falls back
+                // to empty string so the frontend can hide the preview row cleanly).
+                let preview = metadata
+                    .first_prompt
+                    .clone()
+                    .filter(|prompt| prompt != &session_name)
+                    .unwrap_or_default();
                 results.push(GlobalSearchResult {
                     session_id: session_id.clone(),
                     project_name: project_name.clone(),
                     project_path: original_path.clone(),
                     session_name: session_name.chars().take(120).collect(),
-                    matched_text: session_name.chars().take(120).collect(),
+                    matched_text: preview.chars().take(200).collect(),
                     match_source: "session_name".to_string(),
                     timestamp: metadata.first_timestamp.clone(),
                     jsonl_path: file_path.to_string_lossy().to_string(),
@@ -609,17 +643,19 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
         fs::File::open(&path).map_err(|open_error| format!("Cannot open file: {}", open_error))?;
     let reader = BufReader::new(file);
 
-    // First pass: parse all entries and deduplicate by requestId
-    let mut entries: Vec<JsonlEntry> = Vec::new();
-    let mut last_index_by_request: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    let mut messages: Vec<ConversationMessage> = Vec::new();
+    let mut current_assistant_text = String::new();
+    let mut current_assistant_timestamp = String::new();
+    let mut in_assistant_turn = false;
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        if line.is_empty() {
+    // Streaming dedup: Claude Code writes multiple JSONL entries per API response
+    // with the same requestId, each superseding the previous one. Buffer the most
+    // recent assistant entry per requestId and commit it when a new requestId
+    // (or any non-assistant entry) appears.
+    let mut pending_assistant: Option<JsonlEntry> = None;
+
+    for line in reader.lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
             continue;
         }
         let entry: JsonlEntry = match serde_json::from_str(&line) {
@@ -627,142 +663,163 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
             Err(_) => continue,
         };
 
-        let index = entries.len();
-        if let Some(ref request_id) = entry.request_id {
-            last_index_by_request.insert(request_id.clone(), index);
+        if should_skip_entry(&entry) {
+            continue;
         }
-        entries.push(entry);
-    }
 
-    // Second pass: build messages with proper filtering
-    let mut messages: Vec<ConversationMessage> = Vec::new();
-    let mut current_assistant_text = String::new();
-    let mut current_assistant_timestamp = String::new();
-    let mut in_assistant_turn = false;
-
-    for (entry_index, entry) in entries.iter().enumerate() {
         let entry_type = match &entry.entry_type {
             Some(entry_type) => entry_type.as_str(),
             None => continue,
         };
 
-        // Skip sidechains (subagent conversations)
-        if entry.is_sidechain.unwrap_or(false) {
+        // Assistant entries: maybe buffer for dedup, maybe commit previous pending
+        if entry_type == "assistant" {
+            if let (Some(ref pending), Some(ref current_rid)) =
+                (pending_assistant.as_ref(), entry.request_id.as_ref())
+            {
+                if pending.request_id.as_ref() == Some(current_rid) {
+                    // Same streaming response — replace the pending entry
+                    pending_assistant = Some(entry);
+                    continue;
+                }
+            }
+            // Different requestId (or no requestId on either side) — commit
+            // the old pending entry into the accumulator before buffering the new one.
+            if let Some(previous) = pending_assistant.take() {
+                accumulate_assistant(
+                    previous,
+                    &mut current_assistant_text,
+                    &mut current_assistant_timestamp,
+                    &mut in_assistant_turn,
+                );
+            }
+            pending_assistant = Some(entry);
             continue;
         }
 
-        // Skip synthetic messages
-        if let Some(ref message) = entry.message {
-            if let Some(ref model) = message.model {
-                if model == "<synthetic>" {
-                    continue;
-                }
-            }
+        // Non-assistant entry: commit any pending assistant first
+        if let Some(previous) = pending_assistant.take() {
+            accumulate_assistant(
+                previous,
+                &mut current_assistant_text,
+                &mut current_assistant_timestamp,
+                &mut in_assistant_turn,
+            );
         }
 
-        // Skip noise entry types
-        match entry_type {
-            "system" | "summary" | "file-history-snapshot" | "queue-operation" => continue,
-            _ => {}
+        if entry_type == "user" {
+            process_user_entry(
+                entry,
+                &mut messages,
+                &mut current_assistant_text,
+                &mut current_assistant_timestamp,
+                &mut in_assistant_turn,
+            );
         }
-
-        // Deduplicate assistant streaming entries: skip all but last per requestId
-        if entry_type == "assistant" {
-            if let Some(ref request_id) = entry.request_id {
-                if let Some(&last_index) = last_index_by_request.get(request_id) {
-                    if entry_index != last_index {
-                        continue;
-                    }
-                }
-            }
-        }
-
-        match entry_type {
-            "user" => {
-                // Compaction summaries are special
-                if entry.is_compact_summary.unwrap_or(false) {
-                    // Flush pending assistant text first
-                    flush_assistant(&mut messages, &mut current_assistant_text,
-                        &mut current_assistant_timestamp, &mut in_assistant_turn);
-
-                    let text = extract_user_text(&entry.message);
-                    if !text.is_empty() {
-                        messages.push(ConversationMessage {
-                            role: "compaction".to_string(),
-                            text,
-                            timestamp: entry.timestamp.clone().unwrap_or_default(),
-                        });
-                    }
-                    continue;
-                }
-
-                // Skip meta messages (tool results, internal flow)
-                if entry.is_meta.unwrap_or(false) {
-                    continue;
-                }
-
-                // Skip entries with toolUseResult
-                if entry.tool_use_result.is_some() {
-                    continue;
-                }
-
-                // Check if content is an array with tool_result blocks — these are
-                // tool responses or interruptions, not real user input
-                if is_tool_result_content(&entry.message) {
-                    continue;
-                }
-
-                let text = extract_user_text(&entry.message);
-                let cleaned = strip_system_tags(&text);
-
-                if cleaned.is_empty() {
-                    continue;
-                }
-
-                // Flush pending assistant text before user message
-                flush_assistant(&mut messages, &mut current_assistant_text,
-                    &mut current_assistant_timestamp, &mut in_assistant_turn);
-
-                messages.push(ConversationMessage {
-                    role: "user".to_string(),
-                    text: cleaned,
-                    timestamp: entry.timestamp.clone().unwrap_or_default(),
-                });
-            }
-            "assistant" => {
-                let timestamp = entry.timestamp.clone().unwrap_or_default();
-
-                if !in_assistant_turn {
-                    in_assistant_turn = true;
-                    current_assistant_timestamp = timestamp;
-                }
-
-                // Accumulate all assistant content — only flush when
-                // the next real user message arrives (handled above)
-                if let Some(message) = &entry.message {
-                    let text_parts = extract_assistant_text(&message.content);
-                    if !text_parts.is_empty() {
-                        if !current_assistant_text.is_empty() {
-                            current_assistant_text.push_str("\n\n");
-                        }
-                        current_assistant_text.push_str(&text_parts);
-                    }
-                }
-            }
-            _ => {}
-        }
+        // Other entry types (system/summary/etc.) are already filtered by should_skip_entry
     }
 
-    // Flush remaining assistant text
-    if in_assistant_turn && !current_assistant_text.is_empty() {
-        messages.push(ConversationMessage {
-            role: "assistant".to_string(),
-            text: current_assistant_text,
-            timestamp: current_assistant_timestamp,
-        });
+    // End of file — commit any remaining pending assistant, then flush the turn
+    if let Some(final_entry) = pending_assistant.take() {
+        accumulate_assistant(
+            final_entry,
+            &mut current_assistant_text,
+            &mut current_assistant_timestamp,
+            &mut in_assistant_turn,
+        );
     }
+    flush_assistant(
+        &mut messages,
+        &mut current_assistant_text,
+        &mut current_assistant_timestamp,
+        &mut in_assistant_turn,
+    );
 
     Ok(messages)
+}
+
+fn should_skip_entry(entry: &JsonlEntry) -> bool {
+    if entry.is_sidechain.unwrap_or(false) {
+        return true;
+    }
+    if let Some(ref message) = entry.message {
+        if message.model.as_deref() == Some("<synthetic>") {
+            return true;
+        }
+    }
+    matches!(
+        entry.entry_type.as_deref(),
+        Some("system") | Some("summary") | Some("file-history-snapshot") | Some("queue-operation")
+    )
+}
+
+fn accumulate_assistant(
+    entry: JsonlEntry,
+    current_text: &mut String,
+    current_timestamp: &mut String,
+    in_turn: &mut bool,
+) {
+    if !*in_turn {
+        *in_turn = true;
+        *current_timestamp = entry.timestamp.clone().unwrap_or_default();
+    }
+    if let Some(message) = &entry.message {
+        let text_parts = extract_assistant_text(&message.content);
+        if !text_parts.is_empty() {
+            if !current_text.is_empty() {
+                current_text.push_str("\n\n");
+            }
+            current_text.push_str(&text_parts);
+        }
+    }
+}
+
+fn process_user_entry(
+    entry: JsonlEntry,
+    messages: &mut Vec<ConversationMessage>,
+    current_assistant_text: &mut String,
+    current_assistant_timestamp: &mut String,
+    in_assistant_turn: &mut bool,
+) {
+    // Compaction summaries are special
+    if entry.is_compact_summary.unwrap_or(false) {
+        flush_assistant(messages, current_assistant_text, current_assistant_timestamp, in_assistant_turn);
+        let text = extract_user_text(&entry.message);
+        if !text.is_empty() {
+            messages.push(ConversationMessage {
+                role: "compaction".to_string(),
+                text,
+                timestamp: entry.timestamp.unwrap_or_default(),
+                images: Vec::new(),
+            });
+        }
+        return;
+    }
+
+    // Skip meta and tool-result entries
+    if entry.is_meta.unwrap_or(false) || entry.tool_use_result.is_some() {
+        return;
+    }
+    if is_tool_result_content(&entry.message) {
+        return;
+    }
+
+    let text = extract_user_text(&entry.message);
+    let cleaned = strip_system_tags(&text);
+    let images = extract_user_images(&entry.message, &cleaned);
+
+    if cleaned.is_empty() && images.is_empty() {
+        return;
+    }
+
+    flush_assistant(messages, current_assistant_text, current_assistant_timestamp, in_assistant_turn);
+
+    messages.push(ConversationMessage {
+        role: "user".to_string(),
+        text: cleaned,
+        timestamp: entry.timestamp.unwrap_or_default(),
+        images,
+    });
 }
 
 fn flush_assistant(
@@ -776,10 +833,84 @@ fn flush_assistant(
             role: "assistant".to_string(),
             text: current_text.clone(),
             timestamp: current_timestamp.clone(),
+            images: Vec::new(),
         });
         current_text.clear();
         *in_turn = false;
     }
+}
+
+/// Extract image content blocks from a user message, pairing them positionally
+/// with `[Image #N]` text references. Returns a list of (number, data_url) pairs.
+fn extract_user_images(message: &Option<JsonlMessage>, text: &str) -> Vec<MessageImage> {
+    let msg = match message {
+        Some(msg) => msg,
+        None => return Vec::new(),
+    };
+    let blocks = match &msg.content {
+        Some(Value::Array(blocks)) => blocks,
+        _ => return Vec::new(),
+    };
+
+    // Collect image blocks in order
+    let mut image_blocks: Vec<&Value> = Vec::new();
+    for block in blocks {
+        if block.get("type").and_then(|block_type| block_type.as_str()) == Some("image") {
+            image_blocks.push(block);
+        }
+    }
+
+    if image_blocks.is_empty() {
+        return Vec::new();
+    }
+
+    // Find [Image #N] references in the text, in order of appearance
+    let mut text_refs: Vec<u32> = Vec::new();
+    let mut cursor = 0;
+    while let Some(found) = text[cursor..].find("[Image #") {
+        let start = cursor + found + "[Image #".len();
+        if let Some(end_offset) = text[start..].find(']') {
+            if let Ok(number) = text[start..start + end_offset].parse::<u32>() {
+                text_refs.push(number);
+            }
+            cursor = start + end_offset + 1;
+        } else {
+            break;
+        }
+    }
+
+    // Extras (image blocks without a matching text reference) are numbered
+    // starting after the highest referenced number, so they can't collide.
+    let extras_base = text_refs.iter().copied().max().unwrap_or(0);
+
+    // Pair image blocks with text references positionally
+    let mut images: Vec<MessageImage> = Vec::new();
+    for (image_index, block) in image_blocks.iter().enumerate() {
+        let source = match block.get("source") {
+            Some(source) => source,
+            None => continue,
+        };
+        let media_type = source
+            .get("media_type")
+            .and_then(|val| val.as_str())
+            .unwrap_or("image/png");
+        let data = match source.get("data").and_then(|val| val.as_str()) {
+            Some(data) => data,
+            None => continue,
+        };
+
+        let number = match text_refs.get(image_index).copied() {
+            Some(referenced) => referenced,
+            None => extras_base + (image_index - text_refs.len() + 1) as u32,
+        };
+
+        images.push(MessageImage {
+            number,
+            data_url: format!("data:{};base64,{}", media_type, data),
+        });
+    }
+
+    images
 }
 
 /// Check if user message content is an array containing tool_result blocks
@@ -801,75 +932,87 @@ fn is_tool_result_content(message: &Option<JsonlMessage>) -> bool {
 
 /// Strip system/meta tags and ANSI escape sequences that shouldn't be displayed
 fn strip_system_tags(text: &str) -> String {
-    let mut result = text.to_string();
-
-    // Remove paired tags — content between open and close is removed entirely
-    let remove_tags = [
+    const DROP_TAGS: &[&str] = &[
         "system-reminder",
         "local-command-caveat",
         "local-command-stdout",
         "local-command-stderr",
         "command-args",
     ];
-    for tag in remove_tags {
-        let open = format!("<{}>", tag);
-        let close = format!("</{}>", tag);
-        while let Some(start) = result.find(&open) {
-            if let Some(end) = result.find(&close) {
-                let tag_end = end + close.len();
-                result = format!("{}{}", &result[..start], &result[tag_end..]);
-            } else {
-                result = result[..start].to_string();
+    const UNWRAP_TAGS: &[&str] = &["command-name", "command-message"];
+
+    let mut result = strip_paired_tags(text, DROP_TAGS, false);
+    result = strip_paired_tags(&result, UNWRAP_TAGS, true);
+    strip_ansi(&result).trim().to_string()
+}
+
+/// Remove `<tag>...</tag>` blocks. If `keep_inner` is true, the inner text is kept.
+/// Scans left-to-right so mismatched tags are handled correctly and allocates once.
+fn strip_paired_tags(text: &str, tags: &[&str], keep_inner: bool) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut cursor = 0;
+
+    while cursor < text.len() {
+        let mut earliest: Option<(usize, &str)> = None;
+        for tag in tags {
+            let open = format!("<{}>", tag);
+            if let Some(found) = text[cursor..].find(&open) {
+                let abs = cursor + found;
+                if earliest.map_or(true, |(earlier, _)| abs < earlier) {
+                    earliest = Some((abs, *tag));
+                }
+            }
+        }
+
+        match earliest {
+            Some((open_start, tag)) => {
+                output.push_str(&text[cursor..open_start]);
+                let open_len = tag.len() + 2; // <tag>
+                let inner_start = open_start + open_len;
+                let close = format!("</{}>", tag);
+                match text[inner_start..].find(&close) {
+                    Some(close_offset) => {
+                        if keep_inner {
+                            output.push_str(&text[inner_start..inner_start + close_offset]);
+                        }
+                        cursor = inner_start + close_offset + close.len();
+                    }
+                    None => {
+                        // Unclosed — drop everything from the open tag onward
+                        return output;
+                    }
+                }
+            }
+            None => {
+                output.push_str(&text[cursor..]);
                 break;
             }
         }
     }
 
-    // Clean <command-name>...</command-name> → keep just the inner text
-    while let Some(start) = result.find("<command-name>") {
-        let content_start = start + "<command-name>".len();
-        if let Some(end_offset) = result[content_start..].find("</command-name>") {
-            let command_name = result[content_start..content_start + end_offset].to_string();
-            let tag_end = content_start + end_offset + "</command-name>".len();
-            result = format!("{}{}{}", &result[..start], command_name, &result[tag_end..]);
-        } else {
-            break;
-        }
-    }
+    output
+}
 
-    // Clean <command-message>...</command-message> → keep just the inner text
-    while let Some(start) = result.find("<command-message>") {
-        let content_start = start + "<command-message>".len();
-        if let Some(end_offset) = result[content_start..].find("</command-message>") {
-            let inner = result[content_start..content_start + end_offset].to_string();
-            let tag_end = content_start + end_offset + "</command-message>".len();
-            result = format!("{}{}{}", &result[..start], inner, &result[tag_end..]);
-        } else {
-            break;
-        }
-    }
-
-    // Strip ANSI escape sequences (e.g. \x1b[2m, \x1b[22m, \x1b[0m)
-    let mut cleaned = String::with_capacity(result.len());
-    let bytes = result.as_bytes();
+/// Strip ANSI CSI escape sequences (e.g. `\x1b[2m`, `\x1b[22m`, `\x1b[0m`).
+fn strip_ansi(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
     let mut cursor = 0;
     while cursor < bytes.len() {
         if bytes[cursor] == 0x1b && cursor + 1 < bytes.len() && bytes[cursor + 1] == b'[' {
-            // Skip until we find a letter that terminates the escape sequence
             cursor += 2;
             while cursor < bytes.len() && !bytes[cursor].is_ascii_alphabetic() {
                 cursor += 1;
             }
             if cursor < bytes.len() {
-                cursor += 1; // skip the terminating letter
+                cursor += 1;
             }
         } else {
-            cleaned.push(bytes[cursor] as char);
+            output.push(bytes[cursor] as char);
             cursor += 1;
         }
     }
-
-    cleaned.trim().to_string()
+    output
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -889,71 +1032,46 @@ fn get_claude_projects_dir() -> Result<PathBuf, String> {
 fn get_file_mtime_iso(path: &PathBuf) -> Option<String> {
     let metadata = path.metadata().ok()?;
     let modified = metadata.modified().ok()?;
-    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
-    let secs = duration.as_secs();
-    let millis = duration.subsec_millis();
-    // Format as ISO 8601 UTC
-    let datetime = chrono_minimal_utc(secs, millis);
-    Some(datetime)
+    let datetime: chrono::DateTime<chrono::Utc> = modified.into();
+    Some(datetime.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
-fn chrono_minimal_utc(epoch_secs: u64, millis: u32) -> String {
-    let secs_per_day: u64 = 86400;
-    let days = epoch_secs / secs_per_day;
-    let day_secs = (epoch_secs % secs_per_day) as u32;
-    let hours = day_secs / 3600;
-    let minutes = (day_secs % 3600) / 60;
-    let seconds = day_secs % 60;
-
-    // Days since Unix epoch to Y-M-D (simplified Gregorian)
-    let mut remaining_days = days as i64;
-    let mut year: i64 = 1970;
-    loop {
-        let days_in_year: i64 = if is_leap_year(year) { 366 } else { 365 };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        year += 1;
-    }
-    let month_days: [i64; 12] = if is_leap_year(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut month: usize = 0;
-    for (month_index, &days_count) in month_days.iter().enumerate() {
-        if remaining_days < days_count {
-            month = month_index;
-            break;
-        }
-        remaining_days -= days_count;
-    }
-    let day = remaining_days + 1;
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        year,
-        month + 1,
-        day,
-        hours,
-        minutes,
-        seconds,
-        millis
-    )
-}
-
-fn is_leap_year(year: i64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
-}
-
+/// Decode Claude Code's encoded project directory name back to a filesystem path.
+/// `-Users-vishnu-Documents-my-project` could be `/Users/vishnu/Documents/my-project`
+/// or `/Users/vishnu/Documents/my/project` — project names with dashes are ambiguous.
+/// Try progressively fewer dash→slash substitutions from the right, preferring the
+/// first candidate that exists on disk.
 fn decode_project_path(encoded: &str) -> String {
-    // "-Users-vishnu-Documents-archer" → "/Users/vishnu/Documents/archer"
-    if encoded.starts_with('-') {
-        encoded.replacen('-', "/", 1).replace('-', "/")
-    } else {
-        encoded.replace('-', "/")
+    if !encoded.starts_with('-') {
+        return encoded.replace('-', "/");
     }
+
+    let without_leading = &encoded[1..];
+    let dash_positions: Vec<usize> = without_leading
+        .char_indices()
+        .filter(|(_, character)| *character == '-')
+        .map(|(index, _)| index)
+        .collect();
+
+    // Try candidates from most slashes (all dashes → slashes) down to just the root slash.
+    for split_count in (0..=dash_positions.len()).rev() {
+        let mut candidate = String::with_capacity(encoded.len());
+        candidate.push('/');
+        let mut previous = 0;
+        for &position in dash_positions.iter().take(split_count) {
+            candidate.push_str(&without_leading[previous..position]);
+            candidate.push('/');
+            previous = position + 1;
+        }
+        candidate.push_str(&without_leading[previous..]);
+
+        if PathBuf::from(&candidate).exists() {
+            return candidate;
+        }
+    }
+
+    // Nothing on disk matched — fall back to the original aggressive decode.
+    format!("/{}", without_leading.replace('-', "/"))
 }
 
 fn extract_user_text(message: &Option<JsonlMessage>) -> String {
@@ -1074,111 +1192,41 @@ struct SessionQuickMetadata {
 }
 
 fn extract_quick_metadata(jsonl_path: &PathBuf) -> SessionQuickMetadata {
-    let empty = SessionQuickMetadata {
-        custom_title: None,
-        first_prompt: None,
-        first_timestamp: None,
-        last_timestamp: None,
-        conversation_count: 0,
-        total_tokens: 0,
-    };
-
-    let file = match fs::File::open(jsonl_path) {
-        Ok(file) => file,
-        Err(_) => return empty,
-    };
-    let file_size = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-
-    // ── Pass 1: Read first 100 lines for head metadata ─────────────────
-    let head_reader = BufReader::new(match fs::File::open(jsonl_path) {
-        Ok(file) => file,
-        Err(_) => return empty,
-    });
-
-    let mut custom_title = None;
-    let mut first_prompt = None;
-    let mut first_timestamp = None;
-
-    for line in head_reader.lines().flatten().take(100) {
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(entry) = serde_json::from_str::<JsonlEntry>(&line) {
-            if first_timestamp.is_none() {
-                if let Some(timestamp) = &entry.timestamp {
-                    first_timestamp = Some(timestamp.clone());
-                }
-            }
-            if let Some(ref entry_type) = entry.entry_type {
-                if entry_type == "custom-title" {
-                    if let Some(title) = &entry.custom_title {
-                        custom_title = Some(title.clone());
-                    }
-                }
-            }
-            if first_prompt.is_none() {
-                if let Some(ref entry_type) = entry.entry_type {
-                    if entry_type == "user" && entry.tool_use_result.is_none() {
-                        first_prompt = Some(
-                            extract_user_text(&entry.message)
-                                .chars()
-                                .take(200)
-                                .collect(),
-                        );
-                    }
-                }
-            }
-            // Stop early if we have everything from the head
-            if first_timestamp.is_some() && first_prompt.is_some() {
-                break;
-            }
-        }
-    }
-
-    // ── Pass 2: Read last 128KB for tail metadata ──────────────────────
-    let tail_size: u64 = 128 * 1024;
-    let mut last_timestamp = None;
+    let mut custom_title: Option<String> = None;
+    let mut first_prompt: Option<String> = None;
+    let mut first_timestamp: Option<String> = None;
+    let mut last_timestamp: Option<String> = None;
+    let mut conversation_count: u64 = 0;
     let mut token_by_request: std::collections::HashMap<String, u64> =
         std::collections::HashMap::new();
 
-    let tail_file = match fs::File::open(jsonl_path) {
+    let file = match fs::File::open(jsonl_path) {
         Ok(file) => file,
-        Err(_) => return empty,
-    };
-
-    if file_size > tail_size {
-        use std::io::Seek;
-        let mut seekable = tail_file;
-        let _ = seekable.seek(std::io::SeekFrom::End(-(tail_size as i64)));
-        let tail_reader = BufReader::new(seekable);
-        let mut lines_iter = tail_reader.lines();
-        // Skip first partial line after seek
-        let _ = lines_iter.next();
-        for line in lines_iter.flatten() {
-            parse_tail_line(&line, &mut last_timestamp, &mut custom_title, &mut token_by_request);
+        Err(_) => {
+            return SessionQuickMetadata {
+                custom_title,
+                first_prompt,
+                first_timestamp,
+                last_timestamp,
+                conversation_count,
+                total_tokens: 0,
+            };
         }
-    } else {
-        // Small file — just read all of it for tail data
-        let tail_reader = BufReader::new(tail_file);
-        for line in tail_reader.lines().flatten() {
-            parse_tail_line(&line, &mut last_timestamp, &mut custom_title, &mut token_by_request);
-        }
-    }
-
-    let total_tokens: u64 = token_by_request.values().sum();
-
-    // ── Pass 3: Full-file string scan for conversation count + custom title ──
-    let count_file = match fs::File::open(jsonl_path) {
-        Ok(file) => file,
-        Err(_) => return empty,
     };
-    let count_reader = BufReader::new(count_file);
-    let mut conversation_count: u64 = 0;
+    let reader = BufReader::new(file);
 
-    for line in count_reader.lines().flatten() {
-        // Pick up custom-title entries anywhere in the file (they can appear
-        // after /rename, which may be far past the first 100 lines and before
-        // the last 128KB)
+    // Single pass: extract head fields on first sighting, update tail fields
+    // (custom_title, last_timestamp, tokens) continuously, and count user messages
+    // using fast substring checks to skip irrelevant lines.
+    for line in reader.lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Lightweight timestamp scan — every line has one; avoid JSON parse cost
+        update_timestamps_from_line(&line, &mut first_timestamp, &mut last_timestamp);
+
+        // Custom title (can appear anywhere after /rename)
         if line.contains("\"type\":\"custom-title\"") {
             if let Ok(entry) = serde_json::from_str::<JsonlEntry>(&line) {
                 if let Some(title) = entry.custom_title {
@@ -1188,20 +1236,38 @@ fn extract_quick_metadata(jsonl_path: &PathBuf) -> SessionQuickMetadata {
             continue;
         }
 
-        // Fast string checks for user message counting
+        // Token accounting on assistant usage entries
+        if line.contains("\"type\":\"assistant\"") && line.contains("\"usage\"") {
+            if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                if let Some(usage) = value.get("message").and_then(|msg| msg.get("usage")) {
+                    let input = usage.get("input_tokens").and_then(|val| val.as_u64()).unwrap_or(0);
+                    let output = usage.get("output_tokens").and_then(|val| val.as_u64()).unwrap_or(0);
+                    if let Some(request_id) = value.get("requestId").and_then(|val| val.as_str()) {
+                        token_by_request.insert(request_id.to_string(), input + output);
+                    }
+                }
+            }
+            continue;
+        }
+
+        // User message counting + first_prompt extraction
         if !line.contains("\"type\":\"user\"") {
             continue;
         }
-        if line.contains("\"toolUseResult\"") {
+        if line.contains("\"toolUseResult\"")
+            || line.contains("\"isSidechain\":true")
+            || line.contains("\"isCompactSummary\":true")
+        {
             continue;
         }
-        if line.contains("\"isSidechain\":true") {
-            continue;
-        }
-        if line.contains("\"isCompactSummary\":true") {
-            continue;
-        }
+
         conversation_count += 1;
+
+        if first_prompt.is_none() {
+            if let Ok(entry) = serde_json::from_str::<JsonlEntry>(&line) {
+                first_prompt = Some(extract_user_text(&entry.message).chars().take(200).collect());
+            }
+        }
     }
 
     SessionQuickMetadata {
@@ -1210,47 +1276,24 @@ fn extract_quick_metadata(jsonl_path: &PathBuf) -> SessionQuickMetadata {
         first_timestamp,
         last_timestamp,
         conversation_count,
-        total_tokens,
+        total_tokens: token_by_request.values().sum(),
     }
 }
 
-fn parse_tail_line(
+fn update_timestamps_from_line(
     line: &str,
+    first_timestamp: &mut Option<String>,
     last_timestamp: &mut Option<String>,
-    custom_title: &mut Option<String>,
-    token_by_request: &mut std::collections::HashMap<String, u64>,
 ) {
-    if line.is_empty() {
-        return;
-    }
-
-    // Extract timestamp with lightweight string search
     if let Some(timestamp_start) = line.find("\"timestamp\":\"") {
-        let value_start = timestamp_start + 13;
+        let value_start = timestamp_start + "\"timestamp\":\"".len();
         if let Some(value_end) = line[value_start..].find('"') {
-            *last_timestamp = Some(line[value_start..value_start + value_end].to_string());
-        }
-    }
-
-    // Pick up custom title (may appear late if user renamed)
-    if line.contains("\"type\":\"custom-title\"") {
-        if let Ok(entry) = serde_json::from_str::<JsonlEntry>(line) {
-            if let Some(title) = entry.custom_title {
-                *custom_title = Some(title);
+            let timestamp = line[value_start..value_start + value_end].to_string();
+            if first_timestamp.is_none() {
+                *first_timestamp = Some(timestamp.clone());
             }
-        }
-    }
-
-    // Extract token usage from assistant messages
-    if line.contains("\"type\":\"assistant\"") && line.contains("\"usage\"") {
-        if let Ok(raw) = serde_json::from_str::<Value>(line) {
-            if let Some(usage) = raw.get("message").and_then(|msg| msg.get("usage")) {
-                let input = usage.get("input_tokens").and_then(|val| val.as_u64()).unwrap_or(0);
-                let output = usage.get("output_tokens").and_then(|val| val.as_u64()).unwrap_or(0);
-                if let Some(request_id) = raw.get("requestId").and_then(|val| val.as_str()) {
-                    token_by_request.insert(request_id.to_string(), input + output);
-                }
-            }
+            *last_timestamp = Some(timestamp);
         }
     }
 }
+

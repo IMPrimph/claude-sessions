@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicholasio/tauri-apps-tauri/refs/heads/dev/crates/tauri-cli/schema.json",
   "productName": "Claude Sessions",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "identifier": "com.claude-sessions.app",
   "build": {
     "frontendDist": "../dist",
@@ -20,7 +20,18 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://github.com",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/.claude/image-cache/**",
+          "$HOME/**/*.png",
+          "$HOME/**/*.jpg",
+          "$HOME/**/*.jpeg",
+          "$HOME/**/*.gif",
+          "$HOME/**/*.webp"
+        ]
+      }
     }
   },
   "bundle": {

@@ -55,16 +55,26 @@
     }
   }
 
+  // Bumped whenever the token loader should abandon its in-flight work — e.g.
+  // when the user switches projects or triggers a refresh. The running loop
+  // compares this counter on each iteration AND after each awaited invoke so
+  // stale invocations stop committing to sessionTokenMap.
+  let tokenLoaderGeneration = 0;
+
   async function loadTokensInBackground(sessionList: SessionInfo[]) {
-    const currentProject = selectedProject;
+    tokenLoaderGeneration += 1;
+    const myGeneration = tokenLoaderGeneration;
     sessionTokenMap = new Map();
+
     for (const session of sessionList) {
-      // Stop if user navigated away
-      if (selectedProject !== currentProject) return;
+      if (myGeneration !== tokenLoaderGeneration) return;
       try {
         const tokens = await invoke<number>("get_session_tokens", {
           jsonlPath: session.jsonl_path,
         });
+        // Re-check after the await: the user may have navigated away while the
+        // Rust scan was running. Don't write stale data into sessionTokenMap.
+        if (myGeneration !== tokenLoaderGeneration) return;
         if (tokens > 0) {
           sessionTokenMap = new Map(sessionTokenMap).set(session.session_id, tokens);
         }

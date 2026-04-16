@@ -115,7 +115,7 @@
     older: "OLDER",
   };
 
-  let groupedSessions = $derived(() => {
+  let groupedSessions = $derived.by(() => {
     const groups: { label: string; sessions: typeof sessions }[] = [];
     const order = ["today", "yesterday", "previous7", "older"];
     const grouped = new Map<string, typeof sessions>();
@@ -138,7 +138,7 @@
 
   // Flat list of all visible sessions for keyboard navigation
   let flatSessions = $derived(
-    groupedSessions().flatMap((group) => group.sessions)
+    groupedSessions.flatMap((group) => group.sessions)
   );
 
   function handleKeydown(event: KeyboardEvent) {
@@ -188,7 +188,7 @@
   </div>
 
   <div class="sessions-scroll">
-    {#each groupedSessions() as group}
+    {#each groupedSessions as group}
       <div class="date-group-label">{group.label}</div>
       {#each group.sessions as session (session.session_id)}
         <button

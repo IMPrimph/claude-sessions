@@ -19,6 +19,27 @@
   let showScrollTop = $state(false);
   let showScrollBottom = $state(false);
 
+  // ── Lightbox for full-size image viewing ──
+  let lightboxUrl: string | null = $state(null);
+  let lightboxLabel = $state("");
+
+  function openLightbox(url: string, label: string) {
+    lightboxUrl = url;
+    lightboxLabel = label;
+  }
+
+  function closeLightbox() {
+    lightboxUrl = null;
+    lightboxLabel = "";
+  }
+
+  function handleLightboxKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && lightboxUrl) {
+      event.preventDefault();
+      closeLightbox();
+    }
+  }
+
   // Auto-scroll to top when session changes
   $effect(() => {
     if (session && scrollContainer) {
@@ -96,6 +117,7 @@
       event.preventDefault();
       searchInput?.focus();
     }
+    handleLightboxKeydown(event);
   }
 
   function formatSessionDate(isoDate: string | null): string {
@@ -246,7 +268,7 @@
               class:search-highlight={messageSearchQuery && matchedMessageIndices.includes(index)}
               class:search-active={messageSearchQuery && matchedMessageIndices[currentMatchIndex] === index}
             >
-              <MessageBubble {message} searchQuery={messageSearchQuery} />
+              <MessageBubble {message} searchQuery={messageSearchQuery} sessionId={session.session_id} onImageOpen={openLightbox} />
             </div>
           {/each}
         {/if}
@@ -265,6 +287,28 @@
     </div>
   {/if}
 </div>
+
+<!-- Image lightbox overlay -->
+{#if lightboxUrl}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="lightbox-overlay" onclick={closeLightbox}>
+    <button class="lightbox-close" onclick={closeLightbox} title="Close (Esc)">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+    {#if lightboxLabel}
+      <div class="lightbox-label">{lightboxLabel}</div>
+    {/if}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <img
+      src={lightboxUrl}
+      alt={lightboxLabel}
+      class="lightbox-image"
+      onclick={(event) => event.stopPropagation()}
+    />
+  </div>
+{/if}
 
 <style>
   .conversation-view {
@@ -437,6 +481,69 @@
 
   .scroll-fab-bottom {
     bottom: 12px;
+  }
+
+  /* ── Image lightbox ── */
+
+  .lightbox-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    background: rgba(0, 0, 0, 0.88);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    cursor: zoom-out;
+    animation: lightbox-fade 0.15s ease-out;
+  }
+
+  @keyframes lightbox-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .lightbox-image {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+    cursor: default;
+  }
+
+  .lightbox-close {
+    position: absolute;
+    top: 18px;
+    right: 18px;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #e0e0f0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .lightbox-close:hover {
+    background: rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.24);
+  }
+
+  .lightbox-label {
+    position: absolute;
+    top: 24px;
+    left: 24px;
+    font-size: 13px;
+    color: #c0c0d8;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 6px 12px;
+    border-radius: 6px;
+    backdrop-filter: blur(8px);
   }
 
   .loading-state,
