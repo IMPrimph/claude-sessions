@@ -92,7 +92,10 @@
 
 <div class="project-grid-page">
   <div class="project-header">
-    <h1>Claude Sessions</h1>
+    <div class="title-row">
+      <h1>Claude Sessions</h1>
+      <span class="version-badge">v0.4.2</span>
+    </div>
     <p class="subtitle">Select a project to view sessions</p>
   </div>
 
@@ -206,11 +209,30 @@
     margin-bottom: 32px;
   }
 
+  .title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+
   .project-header h1 {
     font-size: 24px;
     font-weight: 700;
     color: #e0e0f0;
-    margin: 0 0 8px 0;
+    margin: 0;
+  }
+
+  .version-badge {
+    font-size: 11px;
+    font-weight: 600;
+    color: #818cf8;
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(99, 102, 241, 0.28);
+    padding: 3px 8px;
+    border-radius: 999px;
+    letter-spacing: 0.02em;
+    font-family: "SF Mono", "Fira Code", monospace;
   }
 
   .subtitle {
