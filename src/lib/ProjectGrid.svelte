@@ -96,7 +96,7 @@
   <div class="project-header">
     <div class="title-row">
       <h1>Claude Sessions</h1>
-      <span class="version-badge">v0.4.3</span>
+      <span class="version-badge">v0.4.4</span>
       {#if onCheckUpdates}
         <button class="update-check-btn" onclick={onCheckUpdates} title="Check for updates">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
