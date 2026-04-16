@@ -6,10 +6,12 @@
     projects,
     onSelect,
     onOpenResult,
+    onCheckUpdates,
   }: {
     projects: ProjectInfo[];
     onSelect: (project: ProjectInfo) => void;
     onOpenResult: (result: GlobalSearchResult) => void;
+    onCheckUpdates?: () => void;
   } = $props();
 
   let searchQuery = $state("");
@@ -94,7 +96,18 @@
   <div class="project-header">
     <div class="title-row">
       <h1>Claude Sessions</h1>
-      <span class="version-badge">v0.4.2</span>
+      <span class="version-badge">v0.4.3</span>
+      {#if onCheckUpdates}
+        <button class="update-check-btn" onclick={onCheckUpdates} title="Check for updates">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+            <path d="M21 3v5h-5"/>
+            <path d="M3 21v-5h5"/>
+          </svg>
+          Check for updates
+        </button>
+      {/if}
     </div>
     <p class="subtitle">Select a project to view sessions</p>
   </div>
@@ -233,6 +246,26 @@
     border-radius: 999px;
     letter-spacing: 0.02em;
     font-family: "SF Mono", "Fira Code", monospace;
+  }
+
+  .update-check-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #7a7a9a;
+    background: transparent;
+    border: 1px solid #2a2a4a;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .update-check-btn:hover {
+    color: #c0c0d8;
+    border-color: #3a3a5a;
+    background: rgba(255, 255, 255, 0.03);
   }
 
   .subtitle {

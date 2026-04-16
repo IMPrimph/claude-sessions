@@ -165,15 +165,26 @@
   let pendingUpdate: Update | null = $state(null);
   let updateInstalling = $state(false);
   let updateError = $state("");
+  let updateStatus: "idle" | "checking" | "no-update" | "error" = $state("idle");
+  let updateStatusMessage = $state("");
 
-  async function checkForUpdates() {
+  async function checkForUpdates(manual = false) {
+    updateStatus = "checking";
+    updateStatusMessage = "";
+    updateError = "";
     try {
       const update = await check();
       if (update) {
         pendingUpdate = update;
+        updateStatus = "idle";
+      } else {
+        updateStatus = "no-update";
+        if (manual) updateStatusMessage = "You're on the latest version";
       }
     } catch (checkError) {
       console.error("Update check failed:", checkError);
+      updateStatus = "error";
+      updateStatusMessage = String(checkError);
     }
   }
 
@@ -193,6 +204,11 @@
 
   function dismissUpdate() {
     pendingUpdate = null;
+  }
+
+  function dismissStatus() {
+    updateStatus = "idle";
+    updateStatusMessage = "";
   }
 
   $effect(() => {
@@ -221,6 +237,29 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
     </button>
   </div>
+{:else if updateStatus === "error" || (updateStatus === "no-update" && updateStatusMessage)}
+  <div class="update-banner" class:banner-error={updateStatus === "error"}>
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      {#if updateStatus === "error"}
+        <circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>
+      {:else}
+        <path d="M20 6L9 17l-5-5"/>
+      {/if}
+    </svg>
+    <span class="update-text">
+      {#if updateStatus === "error"}
+        Update check failed: <span class="update-error">{updateStatusMessage}</span>
+      {:else}
+        {updateStatusMessage}
+      {/if}
+    </span>
+    <button class="update-btn ghost" onclick={() => checkForUpdates(true)} title="Retry">
+      Retry
+    </button>
+    <button class="update-btn ghost" onclick={dismissStatus} title="Dismiss">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
 {/if}
 
 <main>
@@ -230,7 +269,7 @@
       <p>Loading projects...</p>
     </div>
   {:else if !selectedProject}
-    <ProjectGrid {projects} onSelect={selectProject} onOpenResult={openSearchResult} />
+    <ProjectGrid {projects} onSelect={selectProject} onOpenResult={openSearchResult} onCheckUpdates={() => checkForUpdates(true)} />
   {:else}
     <div class="app-layout">
       <aside class="sidebar">
@@ -320,6 +359,15 @@
     color: #e0e0f0;
     font-size: 13px;
     max-width: 90%;
+  }
+
+  .update-banner.banner-error {
+    border-color: #ef4444;
+    box-shadow: 0 10px 40px rgba(239, 68, 68, 0.2);
+  }
+
+  .update-banner.banner-error svg {
+    color: #f87171;
   }
 
   .update-banner svg {
