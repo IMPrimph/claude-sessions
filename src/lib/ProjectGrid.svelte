@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import type { ProjectInfo, GlobalSearchResult } from "./types";
+  import { preferences, toggleDateFormat } from "./preferences.svelte";
+  import ActivityHeatmap from "./ActivityHeatmap.svelte";
 
   let {
     projects,
@@ -13,6 +15,40 @@
     onOpenResult: (result: GlobalSearchResult) => void;
     onCheckUpdates?: () => void;
   } = $props();
+
+  function formatLastActive(project: ProjectInfo): string {
+    if (preferences.dateFormat === "absolute") {
+      if (!project.last_active_ms) return "";
+      return formatAbsoluteDate(project.last_active_ms);
+    }
+    // Backend already pre-formatted the relative string
+    return project.last_active ?? "";
+  }
+
+  function formatAbsoluteDate(ms: number): string {
+    const date = new Date(ms);
+    const now = new Date();
+    const sameDay = date.toDateString() === now.toDateString();
+    const sameYear = date.getFullYear() === now.getFullYear();
+    const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (sameDay) return `Today ${time}`;
+    const datePart = date.toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+      ...(sameYear ? {} : { year: "numeric" }),
+    });
+    return `${datePart}, ${time}`;
+  }
+
+  let totalSessions = $derived(projects.reduce((sum, project) => sum + project.session_count, 0));
+  let mostRecentMs = $derived(projects.reduce((max, project) => Math.max(max, project.last_active_ms), 0));
+  let mostRecentLabel = $derived(
+    mostRecentMs > 0 && projects.length > 0
+      ? (preferences.dateFormat === "absolute"
+          ? formatAbsoluteDate(mostRecentMs)
+          : (projects.find((project) => project.last_active_ms === mostRecentMs)?.last_active ?? ""))
+      : ""
+  );
 
   let searchQuery = $state("");
   let globalResults: GlobalSearchResult[] = $state([]);
@@ -97,6 +133,15 @@
     <div class="title-row">
       <h1>Claude Sessions</h1>
       <span class="version-badge">v0.4.4</span>
+      <button class="update-check-btn" onclick={toggleDateFormat} title="Toggle relative / absolute dates">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+          <line x1="16" y1="2" x2="16" y2="6"/>
+          <line x1="8" y1="2" x2="8" y2="6"/>
+          <line x1="3" y1="10" x2="21" y2="10"/>
+        </svg>
+        {preferences.dateFormat === "relative" ? "Relative dates" : "Absolute dates"}
+      </button>
       {#if onCheckUpdates}
         <button class="update-check-btn" onclick={onCheckUpdates} title="Check for updates">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -109,7 +154,13 @@
         </button>
       {/if}
     </div>
-    <p class="subtitle">Select a project to view sessions</p>
+    <p class="subtitle">
+      {projects.length} {projects.length === 1 ? "project" : "projects"}
+      &middot; {totalSessions} {totalSessions === 1 ? "session" : "sessions"}
+      {#if mostRecentLabel}
+        &middot; last active {mostRecentLabel}
+      {/if}
+    </p>
   </div>
 
   <div class="search-wrapper">
@@ -196,9 +247,9 @@
         <div class="card-path">{project.short_path}</div>
         <div class="card-meta">
           <span>{project.session_count} session{project.session_count !== 1 ? 's' : ''}</span>
-          {#if project.last_active}
+          {#if project.last_active_ms}
             <span class="dot">&middot;</span>
-            <span>{project.last_active}</span>
+            <span>{formatLastActive(project)}</span>
           {/if}
         </div>
       </button>
@@ -208,6 +259,8 @@
       <div class="empty-state">No projects found</div>
     {/if}
   </div>
+
+  <ActivityHeatmap />
 </div>
 
 <style>

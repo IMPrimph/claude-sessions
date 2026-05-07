@@ -1,18 +1,78 @@
 <script lang="ts">
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-  import type { ConversationMessage } from "./types";
+  import type { ConversationMessage, ToolResultPayload } from "./types";
+  import { prettyToolName } from "./format";
 
   let {
     message,
     searchQuery = "",
     sessionId = "",
     onImageOpen,
+    onAgentOpen,
+    toolResults,
   }: {
     message: ConversationMessage;
     searchQuery?: string;
     sessionId?: string;
     onImageOpen?: (url: string, label: string) => void;
+    onAgentOpen?: (agentId: string, description: string) => void;
+    toolResults?: Record<string, ToolResultPayload>;
   } = $props();
+
+  // Track which tool pills are expanded by tool_use_id (per-message state)
+  let expandedTools = $state(new Set<string>());
+
+  function toggleToolResult(toolUseId: string) {
+    const next = new Set(expandedTools);
+    if (next.has(toolUseId)) next.delete(toolUseId);
+    else next.add(toolUseId);
+    expandedTools = next;
+  }
+
+  // Lazy-load persisted-output sidecars on first expand for that pill
+  let persistedContents = $state<Record<string, string>>({});
+  let persistedLoading = $state<Record<string, boolean>>({});
+  let persistedErrors = $state<Record<string, string>>({});
+
+  async function loadPersistedFor(toolUseId: string, persistedPath: string) {
+    if (persistedContents[toolUseId] || persistedLoading[toolUseId]) return;
+    persistedLoading = { ...persistedLoading, [toolUseId]: true };
+    try {
+      const content = await invoke<string>("read_tool_output_file", {
+        path: persistedPath,
+      });
+      persistedContents = { ...persistedContents, [toolUseId]: content };
+    } catch (loadError) {
+      persistedErrors = { ...persistedErrors, [toolUseId]: String(loadError) };
+    } finally {
+      persistedLoading = { ...persistedLoading, [toolUseId]: false };
+    }
+  }
+
+  // Strip the <persisted-output>…</persisted-output> wrapper so we show just the preview
+  // alongside a "Load full output" button. Keeps display tidy.
+  function previewContent(content: string): string {
+    const start = content.indexOf("<persisted-output>");
+    const end = content.indexOf("</persisted-output>");
+    if (start === -1 || end === -1) return content;
+    const before = content.slice(0, start).trim();
+    const inside = content.slice(start + "<persisted-output>".length, end);
+    const previewMatch = inside.match(/Preview \(first[^)]*\):\s*\n([\s\S]*)/);
+    const preview = previewMatch ? previewMatch[1].trim() : inside.trim();
+    const after = content.slice(end + "</persisted-output>".length).trim();
+    return [before, preview, after].filter(Boolean).join("\n\n");
+  }
+
+  // Truncate displayed text for very large inline results (still shows everything in
+  // a separate full-screen viewer if we need one later).
+  const INLINE_DISPLAY_LIMIT = 4000;
+  function truncateForInline(text: string): { text: string; truncated: boolean } {
+    if (text.length <= INLINE_DISPLAY_LIMIT) return { text, truncated: false };
+    return {
+      text: text.slice(0, INLINE_DISPLAY_LIMIT) + "\n\n[…truncated for display]",
+      truncated: true,
+    };
+  }
 
   // ── Image references ──
 
@@ -98,12 +158,14 @@
 
   type Segment =
     | { kind: "text"; content: string }
-    | { kind: "tool"; name: string; summary: string }
+    | { kind: "tool"; name: string; summary: string; toolUseId?: string; agentId?: string }
     | { kind: "thinking"; content: string };
 
   function parseAssistantSegments(text: string): Segment[] {
     const segments: Segment[] = [];
-    const markerRegex = /\{\{TOOL:([^|}]+)\|([^}]*)\}\}|\{\{THINKING_START\}\}\n?([\s\S]*?)\n?\{\{THINKING_END\}\}/g;
+    // Marker format: {{TOOL:name|summary[|toolUseId[|agentId]]}} or {{THINKING_START}}...{{THINKING_END}}.
+    // Third field = tool_use_id (most calls). Fourth field = agentId (Agent calls only).
+    const markerRegex = /\{\{TOOL:([^|}]+)\|([^|}]*)(?:\|([^|}]*))?(?:\|([^}]*))?\}\}|\{\{THINKING_START\}\}\n?([\s\S]*?)\n?\{\{THINKING_END\}\}/g;
     let lastIndex = 0;
     let match;
 
@@ -115,11 +177,16 @@
       }
 
       if (match[1] !== undefined) {
-        // Tool marker
-        segments.push({ kind: "tool", name: match[1], summary: match[2] });
-      } else if (match[3] !== undefined) {
+        segments.push({
+          kind: "tool",
+          name: match[1],
+          summary: match[2],
+          toolUseId: match[3] || undefined,
+          agentId: match[4] || undefined,
+        });
+      } else if (match[5] !== undefined) {
         // Thinking block
-        segments.push({ kind: "thinking", content: match[3] });
+        segments.push({ kind: "thinking", content: match[5] });
       }
 
       lastIndex = match.index + match[0].length;
@@ -418,12 +485,74 @@
             {@html searchQuery ? highlightSearch(renderMarkdown(segment.content), searchQuery) : renderMarkdown(segment.content)}
           </div>
         {:else if segment.kind === "tool"}
-          <div class="tool-pill" style="--tool-color: {toolColor(segment.name)}">
-            <span class="tool-name">{segment.name}</span>
-            {#if segment.summary}
-              <span class="tool-summary">{segment.summary}</span>
+          {@const toolResult = segment.toolUseId ? toolResults?.[segment.toolUseId] : undefined}
+          {@const isExpanded = segment.toolUseId ? expandedTools.has(segment.toolUseId) : false}
+          {#if segment.agentId && onAgentOpen}
+            <button
+              type="button"
+              class="tool-pill tool-pill-clickable"
+              style="--tool-color: {toolColor(segment.name)}"
+              onclick={() => onAgentOpen?.(segment.agentId!, segment.summary)}
+              title="Open subagent transcript"
+            >
+              <span class="tool-name">{prettyToolName(segment.name)}</span>
+              {#if segment.summary}
+                <span class="tool-summary">{segment.summary}</span>
+              {/if}
+              <svg class="tool-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
+          {:else if segment.toolUseId && toolResult}
+            <button
+              type="button"
+              class="tool-pill tool-pill-clickable"
+              class:tool-pill-error={toolResult.is_error}
+              class:tool-pill-expanded={isExpanded}
+              style="--tool-color: {toolColor(segment.name)}"
+              onclick={() => toggleToolResult(segment.toolUseId!)}
+              title={isExpanded ? "Collapse output" : "Show output"}
+            >
+              <span class="tool-name">{prettyToolName(segment.name)}</span>
+              {#if segment.summary}
+                <span class="tool-summary">{segment.summary}</span>
+              {/if}
+              {#if toolResult.is_error}
+                <span class="tool-error-tag">error</span>
+              {/if}
+              <svg class="tool-chevron tool-chevron-toggle" class:rotated={isExpanded} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            {#if isExpanded}
+              {@const visible = previewContent(toolResult.content)}
+              {@const truncated = truncateForInline(visible)}
+              <div class="tool-result-panel" class:tool-result-error={toolResult.is_error}>
+                <pre class="tool-result-content">{truncated.text}</pre>
+                {#if toolResult.persisted_path}
+                  <div class="tool-result-actions">
+                    {#if persistedContents[segment.toolUseId]}
+                      <details class="persisted-block">
+                        <summary>Full output ({persistedContents[segment.toolUseId].length.toLocaleString()} chars)</summary>
+                        <pre class="tool-result-content persisted-content">{persistedContents[segment.toolUseId]}</pre>
+                      </details>
+                    {:else if persistedLoading[segment.toolUseId]}
+                      <span class="loading-text">Loading full output...</span>
+                    {:else if persistedErrors[segment.toolUseId]}
+                      <span class="error-text">Failed to load: {persistedErrors[segment.toolUseId]}</span>
+                    {:else}
+                      <button class="tool-load-btn" onclick={() => loadPersistedFor(segment.toolUseId!, toolResult.persisted_path!)}>
+                        Load full output
+                      </button>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
             {/if}
-          </div>
+          {:else}
+            <div class="tool-pill" style="--tool-color: {toolColor(segment.name)}">
+              <span class="tool-name">{prettyToolName(segment.name)}</span>
+              {#if segment.summary}
+                <span class="tool-summary">{segment.summary}</span>
+              {/if}
+            </div>
+          {/if}
         {:else if segment.kind === "thinking"}
           <details class="thinking-block">
             <summary>
@@ -674,6 +803,149 @@
     font-size: 12px;
     line-height: 1.4;
     max-width: 100%;
+  }
+
+  .tool-pill-clickable {
+    cursor: pointer;
+    color: inherit;
+    font-family: inherit;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .tool-pill-clickable:hover {
+    background: rgba(99, 102, 241, 0.1);
+    border-color: rgba(99, 102, 241, 0.3);
+  }
+
+  .tool-pill-expanded {
+    background: rgba(99, 102, 241, 0.08);
+    border-color: rgba(99, 102, 241, 0.25);
+  }
+
+  .tool-pill-error {
+    background: rgba(239, 68, 68, 0.06);
+    border-color: rgba(239, 68, 68, 0.25);
+  }
+
+  .tool-pill-error:hover {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.4);
+  }
+
+  .tool-error-tag {
+    font-size: 9px;
+    color: #f87171;
+    background: rgba(239, 68, 68, 0.15);
+    padding: 1px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+  }
+
+  .tool-chevron {
+    color: #6a6a8a;
+    flex-shrink: 0;
+  }
+
+  .tool-pill-clickable:hover .tool-chevron {
+    color: #a5b4fc;
+  }
+
+  .tool-chevron-toggle {
+    transition: transform 0.15s;
+  }
+
+  .tool-chevron-toggle.rotated {
+    transform: rotate(180deg);
+  }
+
+  .tool-result-panel {
+    margin: 0 0 8px 0;
+    padding: 10px 14px;
+    background: #0d0d18;
+    border: 1px solid #1e1e36;
+    border-radius: 8px;
+    border-left: 3px solid var(--tool-color, #6366f1);
+  }
+
+  .tool-result-panel.tool-result-error {
+    border-left-color: #ef4444;
+    background: rgba(127, 29, 29, 0.08);
+  }
+
+  .tool-result-content {
+    margin: 0;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 12px;
+    color: #b0b0c8;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 360px;
+    overflow-y: auto;
+  }
+
+  .persisted-content {
+    max-height: 600px;
+    margin-top: 8px;
+  }
+
+  .tool-result-actions {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #1e1e36;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .tool-load-btn {
+    background: #1e1e36;
+    border: 1px solid #2a2a4a;
+    color: #a5b4fc;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .tool-load-btn:hover {
+    background: #2a2a4a;
+    border-color: #3a3a5a;
+  }
+
+  .loading-text {
+    font-size: 11px;
+    color: #7a7a9a;
+  }
+
+  .error-text {
+    font-size: 11px;
+    color: #f87171;
+  }
+
+  .persisted-block summary {
+    font-size: 11px;
+    color: #a0a0c0;
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 0;
+  }
+
+  .persisted-block summary:hover {
+    color: #c0c0d8;
+  }
+
+  .tool-result-content::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .tool-result-content::-webkit-scrollbar-thumb {
+    background: #2a2a4a;
+    border-radius: 3px;
   }
 
   .tool-name {

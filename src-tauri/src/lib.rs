@@ -11,6 +11,13 @@ pub fn run() {
             commands::scan_projects,
             commands::get_session_messages,
             commands::get_session_tokens,
+            commands::get_session_stats,
+            commands::export_session_markdown,
+            commands::list_subagents,
+            commands::get_subagent_messages,
+            commands::get_tool_results,
+            commands::read_tool_output_file,
+            commands::get_activity_heatmap,
             commands::global_search,
             commands::get_image_path,
         ])

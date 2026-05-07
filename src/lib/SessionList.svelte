@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SessionInfo } from "./types";
+  import { preferences, toggleDateFormat } from "./preferences.svelte";
 
   let {
     sessions,
@@ -31,7 +32,9 @@
       const queryWords = searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
       if (queryWords.length === 0) return true;
       return (
+        fuzzyMatch(session.custom_title, queryWords) ||
         fuzzyMatch(session.summary, queryWords) ||
+        fuzzyMatch(session.ai_title, queryWords) ||
         fuzzyMatch(session.first_prompt, queryWords) ||
         fuzzyMatch(session.project_name, queryWords) ||
         fuzzyMatch(session.session_id, queryWords)
@@ -43,6 +46,20 @@
     if (!isoDate) return "";
     const date = new Date(isoDate);
     const now = new Date();
+
+    if (preferences.dateFormat === "absolute") {
+      const sameDay = date.toDateString() === now.toDateString();
+      const sameYear = date.getFullYear() === now.getFullYear();
+      const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      if (sameDay) return `Today ${time}`;
+      const datePart = date.toLocaleDateString([], {
+        month: "short",
+        day: "numeric",
+        ...(sameYear ? {} : { year: "numeric" }),
+      });
+      return `${datePart}, ${time}`;
+    }
+
     const diffMs = now.getTime() - date.getTime();
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
@@ -67,31 +84,61 @@
   }
 
   function displayName(session: SessionInfo): string {
+    if (session.custom_title) return session.custom_title;
     if (session.summary) return session.summary.replace(/\*\*/g, "");
+    if (session.ai_title) return session.ai_title;
     if (session.first_prompt) {
-      let prompt = session.first_prompt
-        .replace(/<[^>]+>/g, "")                          // XML tags
-        .replace(/['"`]?\/[\w\-./]+['"`]?\s*/g, "")       // Any absolute file paths
-        .replace(/['"`]?\.\/[\w\-./]+['"`]?\s*/g, "")     // Relative paths
-        .replace(/\b\w+\.(ts|js|svelte|rs|json|md|py|go|jsx|tsx|css|html)\b/g, "") // Bare filenames
-        .replace(/```[\s\S]*?```/g, "")                    // Code blocks
-        .replace(/\[.*?\]\(.*?\)/g, "")                    // Markdown links
-        .replace(/\n+/g, " ")                              // Newlines
-        .replace(/\s+/g, " ")
-        .trim();
-      if (!prompt || prompt.length < 10) {
-        const paths = session.first_prompt.match(/\/[\w\-./]+/g);
-        if (paths && paths.length > 0) {
-          const lastPath = paths[paths.length - 1];
-          const segments = lastPath.split("/").filter(Boolean);
-          prompt = segments.slice(-2).join("/");
-        } else {
-          prompt = session.first_prompt.replace(/\s+/g, " ").trim();
-        }
-      }
-      return prompt.length > 80 ? prompt.slice(0, 80) + "..." : prompt;
+      const slash = extractSlashCommand(session.first_prompt);
+      if (slash) return slash;
+      return formatFirstPrompt(session.first_prompt, 80);
     }
     return session.session_id.slice(0, 8);
+  }
+
+  // Detect a slash command prompt like `<command-name>/effort</command-name><command-args>max</command-args>`
+  // and render it as "/effort max" — otherwise the XML strip leaves nothing usable.
+  function extractSlashCommand(prompt: string): string | null {
+    const nameMatch = prompt.match(/<command-name>([^<]+)<\/command-name>/);
+    if (!nameMatch) return null;
+    const name = nameMatch[1].trim();
+    if (!name.startsWith("/")) return null;
+    const argsMatch = prompt.match(/<command-args>([^<]*)<\/command-args>/);
+    const args = argsMatch?.[1].trim();
+    return args ? `${name} ${args}` : name;
+  }
+
+  // Try aggressive cleanup first, fall back to lightly-cleaned original if cleanup
+  // strips too much. Avoids landing on a UUID for prompts that are mostly paths/code.
+  function formatFirstPrompt(prompt: string, maxLength: number): string {
+    const aggressive = prompt
+      .replace(/<[^>]+>/g, "")                          // XML tags
+      .replace(/['"`]?\/[\w\-./]+['"`]?\s*/g, "")       // Absolute paths
+      .replace(/['"`]?\.\/[\w\-./]+['"`]?\s*/g, "")     // Relative paths
+      .replace(/\b\w+\.(ts|js|svelte|rs|json|md|py|go|jsx|tsx|css|html)\b/g, "") // Bare filenames
+      .replace(/```[\s\S]*?```/g, "")                    // Code blocks
+      .replace(/\[.*?\]\(.*?\)/g, "")                    // Markdown links
+      .replace(/\n+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (aggressive.length >= 10) {
+      return aggressive.length > maxLength
+        ? aggressive.slice(0, maxLength) + "..."
+        : aggressive;
+    }
+
+    // Aggressive cleanup over-stripped — keep the original, just normalize whitespace
+    // and strip code blocks (which look terrible inline anyway).
+    const soft = prompt
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (soft.length >= 4) {
+      return soft.length > maxLength ? soft.slice(0, maxLength) + "..." : soft;
+    }
+
+    return prompt.slice(0, maxLength);
   }
 
   function getDateGroup(isoDate: string | null): string {
@@ -168,19 +215,30 @@
 <div class="session-list">
   <div class="session-list-header">
     <h2>Sessions</h2>
-    <button
-      class="sort-btn"
-      onclick={() => onSortChange(sortOrder === "newest" ? "oldest" : "newest")}
-      title="Sort order"
-    >
-      {sortOrder === "newest" ? "Newest" : "Oldest"}
-    </button>
+    <div class="header-actions">
+      <button
+        class="sort-btn"
+        onclick={toggleDateFormat}
+        title="Toggle relative / absolute dates"
+      >
+        {preferences.dateFormat === "relative" ? "Relative" : "Absolute"}
+      </button>
+      <button
+        class="sort-btn"
+        onclick={() => onSortChange(sortOrder === "newest" ? "oldest" : "newest")}
+        title="Sort order"
+      >
+        {sortOrder === "newest" ? "Newest" : "Oldest"}
+      </button>
+    </div>
   </div>
 
   <div class="search-bar">
     <input
       type="text"
-      placeholder="Filter sessions..."
+      placeholder={searchQuery
+        ? `${filteredSessions.length} of ${sessions.length} match`
+        : `Filter ${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}...`}
       autocomplete="off"
       spellcheck="false"
       bind:value={searchQuery}
@@ -189,7 +247,10 @@
 
   <div class="sessions-scroll">
     {#each groupedSessions as group}
-      <div class="date-group-label">{group.label}</div>
+      <div class="date-group-label">
+        {group.label}
+        <span class="group-count">{group.sessions.length}</span>
+      </div>
       {#each group.sessions as session (session.session_id)}
         <button
           class="session-item"
@@ -251,6 +312,12 @@
     text-transform: uppercase;
   }
 
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   .sort-btn {
     background: #2a2a4a;
     border: none;
@@ -298,6 +365,9 @@
   }
 
   .date-group-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 10px;
     font-weight: 600;
     color: #5a5a7a;
@@ -306,6 +376,14 @@
     margin-top: 12px;
     border-top: 1px solid #222240;
     text-transform: uppercase;
+  }
+
+  .group-count {
+    font-weight: 500;
+    color: #3a3a5a;
+    letter-spacing: 0;
+    text-transform: none;
+    font-size: 10px;
   }
 
   .date-group-label:first-child {

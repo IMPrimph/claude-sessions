@@ -1,6 +1,17 @@
 <script lang="ts">
-  import type { ConversationMessage, SessionInfo } from "./types";
+  import { invoke } from "@tauri-apps/api/core";
+  import { save } from "@tauri-apps/plugin-dialog";
+  import type {
+    ConversationMessage,
+    SessionInfo,
+    SessionStats,
+    SubagentInfo,
+    ToolResultPayload,
+  } from "./types";
+  import { prettyToolName, formatTokenCompact, formatModel } from "./format";
+  import { preferences, type SearchScope } from "./preferences.svelte";
   import MessageBubble from "./MessageBubble.svelte";
+  import SubagentPanel from "./SubagentPanel.svelte";
 
   let {
     session,
@@ -12,12 +23,117 @@
     loading: boolean;
   } = $props();
 
+  let stats: SessionStats | null = $state(null);
+  let statsLoaderGeneration = 0;
+  let showStatsPanel = $state(false);
+
+  let subagents: SubagentInfo[] = $state([]);
+  let openSubagent: SubagentInfo | null = $state(null);
+  let subagentLoaderGeneration = 0;
+
+  let toolResults: Record<string, ToolResultPayload> = $state({});
+  let toolResultsLoaderGeneration = 0;
+
+  $effect(() => {
+    const currentSession = session;
+    if (!currentSession) {
+      toolResults = {};
+      return;
+    }
+    toolResultsLoaderGeneration += 1;
+    const myGeneration = toolResultsLoaderGeneration;
+    invoke<Record<string, ToolResultPayload>>("get_tool_results", {
+      jsonlPath: currentSession.jsonl_path,
+    })
+      .then((result) => {
+        if (myGeneration === toolResultsLoaderGeneration) toolResults = result;
+      })
+      .catch(() => {
+        if (myGeneration === toolResultsLoaderGeneration) toolResults = {};
+      });
+  });
+
+  $effect(() => {
+    const currentSession = session;
+    openSubagent = null;
+    if (!currentSession) {
+      subagents = [];
+      return;
+    }
+    subagentLoaderGeneration += 1;
+    const myGeneration = subagentLoaderGeneration;
+    invoke<SubagentInfo[]>("list_subagents", { jsonlPath: currentSession.jsonl_path })
+      .then((result) => {
+        if (myGeneration === subagentLoaderGeneration) subagents = result;
+      })
+      .catch(() => {
+        if (myGeneration === subagentLoaderGeneration) subagents = [];
+      });
+  });
+
+  function handleAgentOpen(agentId: string, description: string) {
+    const found = subagents.find((subagent) => subagent.agent_id === agentId);
+    if (found) {
+      openSubagent = found;
+      return;
+    }
+    // Fallback: derive the path from the parent session's jsonl_path. Layout is
+    // <project_dir>/<session_id>.jsonl + <project_dir>/<session_id>/subagents/agent-<id>.jsonl.
+    if (!session) return;
+    const parentJsonlPath = session.jsonl_path;
+    const parentDir = parentJsonlPath.substring(0, parentJsonlPath.lastIndexOf("/"));
+    const sessionId = session.session_id;
+    openSubagent = {
+      agent_id: agentId,
+      agent_type: null,
+      description,
+      jsonl_path: `${parentDir}/${sessionId}/subagents/agent-${agentId}.jsonl`,
+      tool_use_id: null,
+    };
+  }
+
+  // Reload stats whenever the session changes; race-guard with a generation counter
+  // so a slow stats fetch can't overwrite results from a newer selection.
+  $effect(() => {
+    const currentSession = session;
+    if (!currentSession) {
+      stats = null;
+      return;
+    }
+    statsLoaderGeneration += 1;
+    const myGeneration = statsLoaderGeneration;
+    stats = null;
+    invoke<SessionStats>("get_session_stats", {
+      jsonlPath: currentSession.jsonl_path,
+    })
+      .then((result) => {
+        if (myGeneration === statsLoaderGeneration) stats = result;
+      })
+      .catch(() => {
+        // Stats are optional UI; silent failure is fine
+      });
+  });
+
+  let totalTokens = $derived(stats ? stats.input_tokens + stats.output_tokens : 0);
+
   let scrollContainer: HTMLDivElement | undefined = $state();
   let messageSearchQuery = $state("");
   let matchedMessageIndices: number[] = $state([]);
   let currentMatchIndex = $state(0);
   let showScrollTop = $state(false);
   let showScrollBottom = $state(false);
+  let searchScope: SearchScope = $state(preferences.defaultSearchScope);
+
+  // Reset scope to the user's current default whenever the session changes
+  $effect(() => {
+    if (session) {
+      searchScope = preferences.defaultSearchScope;
+    }
+  });
+
+  function setSearchScope(value: SearchScope) {
+    searchScope = value;
+  }
 
   // ── Lightbox for full-size image viewing ──
   let lightboxUrl: string | null = $state(null);
@@ -64,7 +180,7 @@
     scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
   }
 
-  // Compute matched indices when search query changes
+  // Compute matched indices when search query OR scope changes
   $effect(() => {
     if (!messageSearchQuery) {
       matchedMessageIndices = [];
@@ -72,8 +188,13 @@
       return;
     }
     const query = messageSearchQuery.toLowerCase();
+    const scope = searchScope;
     matchedMessageIndices = messages
-      .map((message, index) => (message.text.toLowerCase().includes(query) ? index : -1))
+      .map((message, index) => {
+        if (scope === "user" && message.role !== "user") return -1;
+        if (scope === "assistant" && message.role !== "assistant") return -1;
+        return message.text.toLowerCase().includes(query) ? index : -1;
+      })
       .filter((index) => index !== -1);
     currentMatchIndex = 0;
   });
@@ -131,10 +252,62 @@
     });
   }
 
+  function formatTimeOnly(isoDate: string | null): string {
+    if (!isoDate) return "";
+    return new Date(isoDate).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  function isSameDay(a: string | null, b: string | null): boolean {
+    if (!a || !b) return false;
+    return new Date(a).toDateString() === new Date(b).toDateString();
+  }
+
+  let exporting = $state(false);
+  let exportStatus = $state("");
+
+  async function exportToMarkdown() {
+    if (!session || exporting) return;
+    exporting = true;
+    exportStatus = "";
+    try {
+      const defaultName = (session.custom_title || session.summary || session.ai_title || session.session_id)
+        .replace(/[^a-zA-Z0-9 _-]/g, "")
+        .trim()
+        .slice(0, 60) || session.session_id;
+      const path = await save({
+        title: "Export session",
+        defaultPath: `${defaultName}.md`,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!path) {
+        exporting = false;
+        return;
+      }
+      await invoke("export_session_markdown", {
+        jsonlPath: session.jsonl_path,
+        savePath: path,
+        title: session.custom_title || session.summary || session.ai_title || null,
+      });
+      exportStatus = "Exported";
+      setTimeout(() => (exportStatus = ""), 2000);
+    } catch (exportError) {
+      console.error("Export failed:", exportError);
+      exportStatus = `Failed: ${exportError}`;
+      setTimeout(() => (exportStatus = ""), 3000);
+    } finally {
+      exporting = false;
+    }
+  }
+
   function cleanTitle(session: SessionInfo): string {
+    if (session.custom_title) return session.custom_title;
     if (session.summary) return session.summary.replace(/\*\*/g, "");
+    if (session.ai_title) return session.ai_title;
     if (session.first_prompt) {
-      let prompt = session.first_prompt
+      const aggressive = session.first_prompt
         .replace(/<[^>]+>/g, "")
         .replace(/['"`]?\/[\w\-./]+['"`]?\s*/g, "")
         .replace(/['"`]?\.\/[\w\-./]+['"`]?\s*/g, "")
@@ -144,16 +317,17 @@
         .replace(/\n+/g, " ")
         .replace(/\s+/g, " ")
         .trim();
-      if (!prompt || prompt.length < 10) {
-        const paths = session.first_prompt.match(/\/[\w\-./]+/g);
-        if (paths && paths.length > 0) {
-          const segments = paths[paths.length - 1].split("/").filter(Boolean);
-          prompt = segments.slice(-2).join("/");
-        } else {
-          prompt = session.first_prompt.replace(/\s+/g, " ").trim();
-        }
+      if (aggressive.length >= 10) {
+        return aggressive.length > 120 ? aggressive.slice(0, 120) + "..." : aggressive;
       }
-      return prompt.length > 120 ? prompt.slice(0, 120) + "..." : prompt;
+      const soft = session.first_prompt
+        .replace(/```[\s\S]*?```/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (soft.length >= 4) {
+        return soft.length > 120 ? soft.slice(0, 120) + "..." : soft;
+      }
+      return session.first_prompt.slice(0, 120);
     }
     return session.session_id.slice(0, 8);
   }
@@ -196,9 +370,36 @@
       <p>Select a session to view the conversation</p>
     </div>
   {:else}
+    <div class="conversation-main">
     <div class="session-header">
-      <div class="session-title">
-        {cleanTitle(session)}
+      <div class="session-title-row">
+        <div class="session-title">{cleanTitle(session)}</div>
+        <div class="session-actions">
+          <button
+            class="header-action-btn"
+            class:active={showStatsPanel}
+            onclick={() => (showStatsPanel = !showStatsPanel)}
+            title="Session stats"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 12l4-4 4 4 5-5"/></svg>
+            Stats
+          </button>
+          <button
+            class="header-action-btn"
+            onclick={exportToMarkdown}
+            disabled={exporting}
+            title="Export conversation as Markdown"
+          >
+            {#if exporting}
+              Exporting…
+            {:else if exportStatus}
+              {exportStatus}
+            {:else}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export
+            {/if}
+          </button>
+        </div>
       </div>
       <div class="session-info">
         <span>{session.project_name}</span>
@@ -208,18 +409,84 @@
         {/if}
         {#if session.created}
           <span class="separator">|</span>
-          <span>{formatSessionDate(session.created)}</span>
           {#if session.modified && session.modified !== session.created}
-            <span class="time-arrow">→</span>
-            <span>{formatSessionDate(session.modified)}</span>
+            {#if isSameDay(session.created, session.modified)}
+              <span>{formatSessionDate(session.created)}</span>
+              <span class="time-arrow">→</span>
+              <span>{formatTimeOnly(session.modified)}</span>
+            {:else}
+              <span>{formatSessionDate(session.created)}</span>
+              <span class="time-arrow">→</span>
+              <span>{formatSessionDate(session.modified)}</span>
+            {/if}
             <span class="duration-badge">({sessionDuration(session.created, session.modified)})</span>
+          {:else}
+            <span>{formatSessionDate(session.created)}</span>
           {/if}
         {/if}
-        {#if session.message_count}
+        {#if stats && stats.user_prompt_count > 0}
+          <span class="separator">|</span>
+          <span>{stats.user_prompt_count} prompts</span>
+        {:else if session.message_count}
           <span class="separator">|</span>
           <span>{session.message_count} messages</span>
         {/if}
+        {#if totalTokens > 0}
+          <span class="separator">|</span>
+          <span title="Input + output tokens (cache reads not counted)">{formatTokenCompact(totalTokens)} tokens</span>
+        {/if}
+        {#if stats && stats.models.length > 0}
+          <span class="separator">|</span>
+          <span class="model-badge">{stats.models.map(formatModel).join(" + ")}</span>
+        {/if}
       </div>
+
+      {#if showStatsPanel && stats}
+        <div class="stats-panel">
+          <div class="stats-grid">
+            <div class="stat-cell">
+              <div class="stat-label">Input</div>
+              <div class="stat-value">{formatTokenCompact(stats.input_tokens)}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">Output</div>
+              <div class="stat-value">{formatTokenCompact(stats.output_tokens)}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">Cache read</div>
+              <div class="stat-value">{formatTokenCompact(stats.cache_read_tokens)}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">Cache write</div>
+              <div class="stat-value">{formatTokenCompact(stats.cache_creation_tokens)}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">Assistant turns</div>
+              <div class="stat-value">{stats.assistant_count}</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">Thinking blocks</div>
+              <div class="stat-value">{stats.thinking_block_count}</div>
+            </div>
+          </div>
+          {#if stats.tool_counts.length > 0}
+            <div class="tool-breakdown">
+              <div class="stats-section-label">Tool usage</div>
+              <div class="tool-chips">
+                {#each stats.tool_counts.slice(0, 12) as tool}
+                  <span class="tool-chip">
+                    <span class="tool-chip-name">{prettyToolName(tool.name)}</span>
+                    <span class="tool-chip-count">{tool.count}</span>
+                  </span>
+                {/each}
+                {#if stats.tool_counts.length > 12}
+                  <span class="tool-chip more">+{stats.tool_counts.length - 12} more</span>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
 
     {#if messages.length > 0}
@@ -234,6 +501,26 @@
           bind:this={searchInput}
           onkeydown={handleSearchKeydown}
         />
+        <div class="scope-toggle" role="radiogroup" aria-label="Search scope">
+          <button
+            class="scope-chip"
+            class:scope-active={searchScope === "all"}
+            onclick={() => setSearchScope("all")}
+            title="Search all messages"
+          >All</button>
+          <button
+            class="scope-chip"
+            class:scope-active={searchScope === "user"}
+            onclick={() => setSearchScope("user")}
+            title="Search only your prompts"
+          >You</button>
+          <button
+            class="scope-chip"
+            class:scope-active={searchScope === "assistant"}
+            onclick={() => setSearchScope("assistant")}
+            title="Search only Claude's responses"
+          >Claude</button>
+        </div>
         {#if messageSearchQuery}
           <span class="match-count">
             {#if matchedMessageIndices.length > 0}
@@ -268,7 +555,14 @@
               class:search-highlight={messageSearchQuery && matchedMessageIndices.includes(index)}
               class:search-active={messageSearchQuery && matchedMessageIndices[currentMatchIndex] === index}
             >
-              <MessageBubble {message} searchQuery={messageSearchQuery} sessionId={session.session_id} onImageOpen={openLightbox} />
+              <MessageBubble
+                {message}
+                searchQuery={messageSearchQuery}
+                sessionId={session.session_id}
+                onImageOpen={openLightbox}
+                onAgentOpen={handleAgentOpen}
+                {toolResults}
+              />
             </div>
           {/each}
         {/if}
@@ -285,6 +579,15 @@
         </button>
       {/if}
     </div>
+    </div>
+
+    {#if openSubagent}
+      <SubagentPanel
+        subagent={openSubagent}
+        sessionId={session.session_id}
+        onClose={() => (openSubagent = null)}
+      />
+    {/if}
   {/if}
 </div>
 
@@ -313,9 +616,18 @@
 <style>
   .conversation-view {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     height: 100%;
     background: #12121e;
+    overflow: hidden;
+  }
+
+  .conversation-main {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
   }
 
   .empty-state {
@@ -324,6 +636,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
+    flex: 1;
     color: #5a5a7a;
     gap: 16px;
   }
@@ -343,12 +656,148 @@
     background: #16162a;
   }
 
+  .session-title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+
   .session-title {
     font-size: 16px;
     font-weight: 600;
     color: #e0e0f0;
-    margin-bottom: 8px;
     line-height: 1.4;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .session-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .header-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #1e1e36;
+    border: 1px solid #2a2a4a;
+    color: #a0a0c0;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 5px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .header-action-btn:hover:not(:disabled) {
+    background: #2a2a4a;
+    color: #e0e0f0;
+    border-color: #3a3a5a;
+  }
+
+  .header-action-btn.active {
+    background: rgba(99, 102, 241, 0.15);
+    color: #a5b4fc;
+    border-color: rgba(99, 102, 241, 0.4);
+  }
+
+  .header-action-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .model-badge {
+    color: #a5b4fc;
+    font-weight: 500;
+  }
+
+  .stats-panel {
+    margin-top: 14px;
+    padding: 14px 16px;
+    background: #12121e;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 10px;
+  }
+
+  .stat-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .stat-label {
+    font-size: 10px;
+    color: #5a5a7a;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+  }
+
+  .stat-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: #e0e0f0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tool-breakdown {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #2a2a4a;
+  }
+
+  .stats-section-label {
+    font-size: 10px;
+    color: #5a5a7a;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+
+  .tool-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .tool-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 12px;
+    font-size: 11px;
+  }
+
+  .tool-chip-name {
+    color: #c0c0d8;
+    font-family: "SF Mono", "Fira Code", monospace;
+  }
+
+  .tool-chip-count {
+    color: #6366f1;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tool-chip.more {
+    color: #5a5a7a;
+    font-style: italic;
   }
 
   .session-info {
@@ -402,6 +851,37 @@
 
   .message-search-bar input::placeholder {
     color: #5a5a7a;
+  }
+
+  .scope-toggle {
+    display: inline-flex;
+    align-items: center;
+    background: #12121e;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    padding: 2px;
+    gap: 1px;
+  }
+
+  .scope-chip {
+    background: transparent;
+    border: none;
+    color: #7a7a9a;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 3px 9px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+
+  .scope-chip:hover {
+    color: #c0c0d8;
+  }
+
+  .scope-chip.scope-active {
+    background: rgba(99, 102, 241, 0.18);
+    color: #c7d2fe;
   }
 
   .match-count {

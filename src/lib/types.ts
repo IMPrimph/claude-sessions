@@ -10,6 +10,8 @@ export interface ProjectInfo {
 export interface SessionInfo {
   session_id: string;
   summary: string | null;
+  custom_title: string | null;
+  ai_title: string | null;
   first_prompt: string | null;
   project_path: string;
   project_name: string;
@@ -43,4 +45,41 @@ export interface ConversationMessage {
   text: string;
   timestamp: string;
   images?: MessageImage[];
+}
+
+export interface ToolCount {
+  name: string;
+  count: number;
+}
+
+export interface SubagentInfo {
+  agent_id: string;
+  agent_type: string | null;
+  description: string | null;
+  jsonl_path: string;
+  tool_use_id: string | null;
+}
+
+export interface HeatmapCell {
+  day: number;  // 0 = Sunday, 6 = Saturday
+  hour: number; // 0-23
+  count: number;
+}
+
+export interface ToolResultPayload {
+  content: string;
+  is_error: boolean;
+  persisted_path: string | null;
+}
+
+export interface SessionStats {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  assistant_count: number;
+  user_prompt_count: number;
+  thinking_block_count: number;
+  models: string[];
+  tool_counts: ToolCount[];
 }

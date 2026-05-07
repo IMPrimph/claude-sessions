@@ -11,6 +11,8 @@
   import ProjectGrid from "./lib/ProjectGrid.svelte";
   import SessionList from "./lib/SessionList.svelte";
   import ConversationView from "./lib/ConversationView.svelte";
+  import ShortcutsOverlay from "./lib/ShortcutsOverlay.svelte";
+  import SettingsPanel from "./lib/SettingsPanel.svelte";
 
   let projects: ProjectInfo[] = $state([]);
   let selectedProject: ProjectInfo | null = $state(null);
@@ -215,7 +217,32 @@
     loadProjects();
     checkForUpdates();
   });
+
+  // ── Keyboard shortcuts overlay (toggled with `?`) ─────────────
+  let showShortcuts = $state(false);
+  let showSettings = $state(false);
+
+  function handleGlobalShortcut(event: KeyboardEvent) {
+    // Cmd+, opens settings (macOS convention) — works even from inputs since it's a real shortcut
+    if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+      event.preventDefault();
+      showSettings = true;
+      return;
+    }
+    // Ignore plain-key shortcuts when the user is typing in an input
+    const target = event.target as HTMLElement | null;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+      return;
+    }
+    // `?` is shift+/ on US keyboards — accept either the literal '?' or shift+/
+    if (event.key === "?" || (event.key === "/" && event.shiftKey)) {
+      event.preventDefault();
+      showShortcuts = true;
+    }
+  }
 </script>
+
+<svelte:window onkeydown={handleGlobalShortcut} />
 
 {#if pendingUpdate}
   <div class="update-banner">
@@ -260,6 +287,33 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
     </button>
   </div>
+{/if}
+
+<div class="floating-actions">
+  <button
+    class="floating-action-btn"
+    onclick={() => (showSettings = true)}
+    title="Settings (⌘,)"
+    aria-label="Open settings"
+  >
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+  </button>
+  <button
+    class="floating-action-btn floating-action-btn-help"
+    onclick={() => (showShortcuts = true)}
+    title="Keyboard shortcuts (?)"
+    aria-label="Show keyboard shortcuts"
+  >
+    ?
+  </button>
+</div>
+
+{#if showShortcuts}
+  <ShortcutsOverlay onClose={() => (showShortcuts = false)} />
+{/if}
+
+{#if showSettings}
+  <SettingsPanel onClose={() => (showSettings = false)} />
 {/if}
 
 <main>
@@ -340,6 +394,43 @@
   main {
     height: 100vh;
     width: 100vw;
+  }
+
+  .floating-actions {
+    position: fixed;
+    bottom: 14px;
+    right: 14px;
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .floating-action-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: rgba(26, 26, 46, 0.85);
+    border: 1px solid #2a2a4a;
+    color: #7a7a9a;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(8px);
+    transition: all 0.15s;
+  }
+
+  .floating-action-btn:hover {
+    background: #2a2a4a;
+    color: #c0c0d8;
+    border-color: #3a3a5a;
+  }
+
+  .floating-action-btn-help {
+    font-size: 13px;
+    font-weight: 600;
+    font-family: "SF Mono", "Fira Code", monospace;
   }
 
   .update-banner {
