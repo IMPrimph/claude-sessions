@@ -17,7 +17,7 @@ pub fn run() {
             commands::get_subagent_messages,
             commands::get_tool_results,
             commands::read_tool_output_file,
-            commands::get_activity_heatmap,
+            commands::get_session_file_changes,
             commands::global_search,
             commands::get_image_path,
         ])

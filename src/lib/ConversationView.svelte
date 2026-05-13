@@ -3,6 +3,7 @@
   import { save } from "@tauri-apps/plugin-dialog";
   import type {
     ConversationMessage,
+    FileChange,
     SessionInfo,
     SessionStats,
     SubagentInfo,
@@ -12,6 +13,7 @@
   import { preferences, type SearchScope } from "./preferences.svelte";
   import MessageBubble from "./MessageBubble.svelte";
   import SubagentPanel from "./SubagentPanel.svelte";
+  import FileChangesPanel from "./FileChangesPanel.svelte";
 
   let {
     session,
@@ -25,7 +27,19 @@
 
   let stats: SessionStats | null = $state(null);
   let statsLoaderGeneration = 0;
+
+  // Stats stays as an inline header panel (small numbers, low-volume).
+  // Files moves to a right-side panel — it now renders diff content and needs space.
   let showStatsPanel = $state(false);
+  let showFilesPanel = $state(false);
+
+  let fileChanges: FileChange[] = $state([]);
+  let fileChangesLoaderGeneration = 0;
+  // Badge in the header should reflect the same number the panel shows.
+  // Edited only — read-only files are excluded.
+  let editedFileCount = $derived(
+    fileChanges.filter((change) => change.edit_count > 0).length
+  );
 
   let subagents: SubagentInfo[] = $state([]);
   let openSubagent: SubagentInfo | null = $state(null);
@@ -72,6 +86,8 @@
   });
 
   function handleAgentOpen(agentId: string, description: string) {
+    // Subagent panel and files panel share the right rail
+    showFilesPanel = false;
     const found = subagents.find((subagent) => subagent.agent_id === agentId);
     if (found) {
       openSubagent = found;
@@ -113,6 +129,49 @@
         // Stats are optional UI; silent failure is fine
       });
   });
+
+  // File changes follow the same pattern — race-guarded fetch
+  $effect(() => {
+    const currentSession = session;
+    if (!currentSession) {
+      fileChanges = [];
+      return;
+    }
+    fileChangesLoaderGeneration += 1;
+    const myGeneration = fileChangesLoaderGeneration;
+    fileChanges = [];
+    invoke<FileChange[]>("get_session_file_changes", {
+      jsonlPath: currentSession.jsonl_path,
+    })
+      .then((result) => {
+        if (myGeneration === fileChangesLoaderGeneration) fileChanges = result;
+      })
+      .catch(() => {
+        // File changes are optional; silent failure
+      });
+  });
+
+  // When the session changes, reset any open panel state
+  $effect(() => {
+    if (session) {
+      showFilesPanel = false;
+    }
+  });
+
+  // Files panel and subagent panel both live on the right — mutually exclusive
+  function openFilesPanel() {
+    openSubagent = null;
+    showFilesPanel = true;
+  }
+
+  function closeFilesPanel() {
+    showFilesPanel = false;
+  }
+
+  function toggleFilesPanel() {
+    if (showFilesPanel) closeFilesPanel();
+    else openFilesPanel();
+  }
 
   let totalTokens = $derived(stats ? stats.input_tokens + stats.output_tokens : 0);
 
@@ -377,6 +436,18 @@
         <div class="session-actions">
           <button
             class="header-action-btn"
+            class:active={showFilesPanel}
+            onclick={toggleFilesPanel}
+            title="View file changes (open right panel)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Files
+            {#if editedFileCount > 0}
+              <span class="header-action-count">{editedFileCount}</span>
+            {/if}
+          </button>
+          <button
+            class="header-action-btn"
             class:active={showStatsPanel}
             onclick={() => (showStatsPanel = !showStatsPanel)}
             title="Session stats"
@@ -587,6 +658,11 @@
         sessionId={session.session_id}
         onClose={() => (openSubagent = null)}
       />
+    {:else if showFilesPanel}
+      <FileChangesPanel
+        changes={fileChanges}
+        onClose={closeFilesPanel}
+      />
     {/if}
   {/if}
 </div>
@@ -706,6 +782,18 @@
     color: #a5b4fc;
     border-color: rgba(99, 102, 241, 0.4);
   }
+
+  .header-action-count {
+    background: rgba(99, 102, 241, 0.18);
+    color: #a5b4fc;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 999px;
+    margin-left: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+
 
   .header-action-btn:disabled {
     opacity: 0.6;
@@ -959,8 +1047,9 @@
     top: 12px;
   }
 
+  /* Lifted above the app-level floating actions (gear + ?) so they don't stack */
   .scroll-fab-bottom {
-    bottom: 12px;
+    bottom: 64px;
   }
 
   /* ── Image lightbox ── */

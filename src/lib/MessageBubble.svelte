@@ -396,7 +396,23 @@
   let copied = $state(false);
 
   async function copyText() {
-    await navigator.clipboard.writeText(message.text);
+    let text = message.text;
+    // For assistant messages, strip internal markers so the clipboard gets clean prose.
+    // Tool calls become bracketed labels, thinking blocks are dropped entirely.
+    if (message.role === "assistant") {
+      text = assistantSegments
+        .map((segment) => {
+          if (segment.kind === "text") return segment.content;
+          if (segment.kind === "tool") {
+            const name = prettyToolName(segment.name);
+            return segment.summary ? `[${name}: ${segment.summary}]` : `[${name}]`;
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n\n");
+    }
+    await navigator.clipboard.writeText(text);
     copied = true;
     setTimeout(() => { copied = false; }, 1500);
   }
@@ -459,11 +475,13 @@
           <img src={extra.data_url} alt="Image #{extra.number}" class="user-image" loading="lazy" />
         </button>
       {/each}
+    </div>
+    <div class="user-actions">
       <button class="copy-btn" class:copied onclick={copyText} title="Copy message">
         {#if copied}
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
         {:else}
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
         {/if}
       </button>
     </div>
@@ -565,6 +583,15 @@
           </details>
         {/if}
       {/each}
+    </div>
+    <div class="assistant-actions">
+      <button class="copy-btn" class:copied onclick={copyText} title="Copy message">
+        {#if copied}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+        {:else}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        {/if}
+      </button>
     </div>
   </div>
 {/if}
@@ -670,7 +697,6 @@
     font-size: 14px;
     line-height: 1.5;
     position: relative;
-    padding-right: 36px;
     overflow-wrap: anywhere;
     word-break: break-word;
     white-space: pre-wrap;
@@ -722,27 +748,45 @@
 
   .image-missing svg { color: #6a6a8a; }
 
+  .user-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 6px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .user-row:hover .user-actions { opacity: 1; }
+  .user-actions:has(.copied) { opacity: 1; }
+
+  .assistant-actions {
+    display: flex;
+    justify-content: flex-start;
+    margin-top: 6px;
+    padding-left: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .assistant-row:hover .assistant-actions { opacity: 1; }
+  .assistant-actions:has(.copied) { opacity: 1; }
+
   .copy-btn {
-    position: absolute;
-    top: 8px;
-    right: 8px;
     background: transparent;
     border: none;
-    color: #5a6a8a;
-    width: 24px;
-    height: 24px;
-    border-radius: 4px;
+    color: #6a6a8a;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    opacity: 0;
-    transition: opacity 0.15s, color 0.15s, background 0.15s;
+    transition: color 0.15s, background 0.15s;
   }
 
-  .user-row:hover .copy-btn { opacity: 1; }
-  .copy-btn:hover { background: rgba(255, 255, 255, 0.1); color: #c0c0d8; }
-  .copy-btn.copied { opacity: 1; color: #34d399; }
+  .copy-btn:hover { background: rgba(255, 255, 255, 0.06); color: #c0c0d8; }
+  .copy-btn.copied { color: #34d399; }
 
   /* ── Assistant messages ── */
 

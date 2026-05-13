@@ -162,6 +162,7 @@
     }
   }
 
+
   // ── Auto-updater ─────────────────────────────────────────
 
   let pendingUpdate: Update | null = $state(null);
@@ -398,38 +399,39 @@
 
   .floating-actions {
     position: fixed;
-    bottom: 14px;
-    right: 14px;
+    bottom: 16px;
+    right: 16px;
     z-index: 90;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 10px;
   }
 
   .floating-action-btn {
-    width: 26px;
-    height: 26px;
+    width: 34px;
+    height: 34px;
     border-radius: 50%;
-    background: rgba(26, 26, 46, 0.85);
+    background: rgba(22, 22, 42, 0.92);
     border: 1px solid #2a2a4a;
-    color: #7a7a9a;
+    color: #8a8aaa;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    backdrop-filter: blur(8px);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
     transition: all 0.15s;
   }
 
   .floating-action-btn:hover {
     background: #2a2a4a;
-    color: #c0c0d8;
-    border-color: #3a3a5a;
+    color: #c7d2fe;
+    border-color: rgba(99, 102, 241, 0.4);
   }
 
   .floating-action-btn-help {
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 700;
     font-family: "SF Mono", "Fira Code", monospace;
   }
 

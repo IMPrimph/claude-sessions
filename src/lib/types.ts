@@ -60,16 +60,27 @@ export interface SubagentInfo {
   tool_use_id: string | null;
 }
 
-export interface HeatmapCell {
-  day: number;  // 0 = Sunday, 6 = Saturday
-  hour: number; // 0-23
-  count: number;
-}
-
 export interface ToolResultPayload {
   content: string;
   is_error: boolean;
   persisted_path: string | null;
+}
+
+export interface FileEditEntry {
+  timestamp: string | null;
+  action: "edit" | "write" | "multiedit" | "notebookedit";
+  old_string: string | null;
+  new_string: string | null;
+  tool_use_id: string | null;
+  replace_all: boolean;
+}
+
+export interface FileChange {
+  path: string;
+  display_path: string;
+  edits: FileEditEntry[];
+  edit_count: number;
+  read_count: number;
 }
 
 export interface SessionStats {

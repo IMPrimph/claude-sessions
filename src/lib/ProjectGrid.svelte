@@ -2,7 +2,6 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { ProjectInfo, GlobalSearchResult } from "./types";
   import { preferences, toggleDateFormat } from "./preferences.svelte";
-  import ActivityHeatmap from "./ActivityHeatmap.svelte";
 
   let {
     projects,
@@ -259,8 +258,6 @@
       <div class="empty-state">No projects found</div>
     {/if}
   </div>
-
-  <ActivityHeatmap />
 </div>
 
 <style>

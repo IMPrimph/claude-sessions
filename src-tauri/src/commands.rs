@@ -1,4 +1,3 @@
-use chrono::{DateTime, Datelike, Local, Timelike};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -128,98 +127,247 @@ pub fn get_image_path(session_id: String, image_number: u32) -> Option<String> {
 }
 
 #[derive(Debug, Serialize, Clone)]
-pub struct HeatmapCell {
-    /// Day of week, 0 = Sunday, 6 = Saturday (matches JS `Date.getDay()`).
-    pub day: u8,
-    /// Hour of day in local time, 0–23.
-    pub hour: u8,
-    pub count: u32,
+pub struct FileEditEntry {
+    pub timestamp: Option<String>,
+    /// One of "edit", "write", "multiedit", "notebookedit".
+    pub action: String,
+    /// Previous content (None for Write — there's nothing before).
+    pub old_string: Option<String>,
+    /// New content. None for unusual cases (shouldn't happen in practice).
+    pub new_string: Option<String>,
+    pub tool_use_id: Option<String>,
+    /// True for `replace_all` Edit calls — informational tag in the UI.
+    pub replace_all: bool,
 }
 
-/// Aggregate session activity into 7×24 buckets keyed by local-time day-of-week and hour.
-/// Uses session created/modified timestamps when available; falls back to file mtime.
+#[derive(Debug, Serialize, Clone)]
+pub struct FileChange {
+    pub path: String,
+    pub display_path: String,
+    pub edits: Vec<FileEditEntry>,
+    pub edit_count: u32,
+    pub read_count: u32,
+}
+
+/// Per-session breakdown of file changes — captures the actual old/new content
+/// from each Edit/Write/MultiEdit/NotebookEdit call so the UI can render a diff.
+/// Bash file ops are skipped (too heuristic). Subagent ops aren't included in v1.
 #[tauri::command]
-pub fn get_activity_heatmap() -> Result<Vec<HeatmapCell>, String> {
-    let claude_dir = get_claude_projects_dir()?;
-    let mut buckets = [[0u32; 24]; 7];
+pub fn get_session_file_changes(jsonl_path: String) -> Result<Vec<FileChange>, String> {
+    let path = PathBuf::from(&jsonl_path);
+    if !path.exists() {
+        return Err(format!("Session file not found: {}", jsonl_path));
+    }
 
-    let project_dirs = fs::read_dir(&claude_dir)
-        .map_err(|read_error| format!("Cannot read {:?}: {}", claude_dir, read_error))?;
+    // Resolve project path so we can build project-relative display paths
+    let project_path = path
+        .parent()
+        .and_then(|parent| {
+            parent
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| (parent.to_path_buf(), name.to_string()))
+        })
+        .map(|(parent, name)| resolve_project_path(&parent, &name))
+        .unwrap_or_default();
+    let project_name = project_path
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
 
-    for project_entry in project_dirs.flatten() {
-        let project_dir = project_entry.path();
-        if !project_dir.is_dir() {
+    struct Bucket {
+        edits: Vec<FileEditEntry>,
+        read_count: u32,
+    }
+    let mut buckets: std::collections::HashMap<String, Bucket> =
+        std::collections::HashMap::new();
+
+    let file = fs::File::open(&path)
+        .map_err(|open_error| format!("Cannot open file: {}", open_error))?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines().map_while(Result::ok) {
+        if !line.contains("\"tool_use\"") {
             continue;
         }
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+        let timestamp = value
+            .get("timestamp")
+            .and_then(|val| val.as_str())
+            .map(String::from);
 
-        let mut covered_session_ids: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let blocks = match value
+            .get("message")
+            .and_then(|message| message.get("content"))
+            .and_then(|content| content.as_array())
+        {
+            Some(blocks) => blocks,
+            None => continue,
+        };
 
-        let index_path = project_dir.join("sessions-index.json");
-        if index_path.exists() {
-            if let Ok(content) = fs::read_to_string(&index_path) {
-                if let Ok(data) = serde_json::from_str::<SessionIndexFile>(&content) {
-                    for entry in data.entries {
-                        let timestamp = entry.modified.as_deref().or(entry.created.as_deref());
-                        if let Some(iso_timestamp) = timestamp {
-                            if let Some((day, hour)) = iso_to_local_bucket(iso_timestamp) {
-                                buckets[day as usize][hour as usize] += 1;
-                                covered_session_ids.insert(entry.session_id);
-                            }
-                        }
-                    }
-                }
+        for block in blocks {
+            if block.get("type").and_then(|val| val.as_str()) != Some("tool_use") {
+                continue;
             }
-        }
+            let tool_name = match block.get("name").and_then(|val| val.as_str()) {
+                Some(name) => name,
+                None => continue,
+            };
+            let input = match block.get("input") {
+                Some(input) => input,
+                None => continue,
+            };
+            let tool_use_id = block.get("id").and_then(|val| val.as_str()).map(String::from);
 
-        // Fallback: any JSONL file not covered by the index, use its mtime
-        if let Ok(files) = fs::read_dir(&project_dir) {
-            for file_entry in files.flatten() {
-                let file_path = file_entry.path();
-                if file_path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
-                    continue;
-                }
-                let session_id = file_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                if covered_session_ids.contains(&session_id) {
-                    continue;
-                }
-                if let Ok(metadata) = file_path.metadata() {
-                    if let Ok(modified) = metadata.modified() {
-                        let utc: DateTime<chrono::Utc> = modified.into();
-                        let local: DateTime<Local> = utc.with_timezone(&Local);
-                        let day = local.weekday().num_days_from_sunday() as usize;
-                        let hour = local.hour() as usize;
-                        buckets[day][hour] += 1;
-                    }
-                }
-            }
-        }
-    }
+            // Extract file path + entries (one tool call can produce multiple entries
+            // for MultiEdit). Read calls just bump read_count.
+            let extracted = extract_file_change_entries(tool_name, input, &timestamp, &tool_use_id);
+            let (file_path, entries, is_read) = match extracted {
+                Some(extracted) => extracted,
+                None => continue,
+            };
 
-    let mut cells = Vec::with_capacity(7 * 24);
-    for day in 0..7 {
-        for hour in 0..24 {
-            cells.push(HeatmapCell {
-                day: day as u8,
-                hour: hour as u8,
-                count: buckets[day][hour],
+            let bucket = buckets.entry(file_path).or_insert_with(|| Bucket {
+                edits: Vec::new(),
+                read_count: 0,
             });
+            if is_read {
+                bucket.read_count += 1;
+            } else {
+                for entry in entries {
+                    bucket.edits.push(entry);
+                }
+            }
         }
     }
-    Ok(cells)
+
+    let mut changes: Vec<FileChange> = buckets
+        .into_iter()
+        .map(|(file_path, bucket)| FileChange {
+            display_path: build_display_path(&project_path, &project_name, &file_path),
+            edit_count: bucket.edits.len() as u32,
+            read_count: bucket.read_count,
+            edits: bucket.edits,
+            path: file_path,
+        })
+        .collect();
+
+    // Sort: most edits first, then by reads, then alphabetically
+    changes.sort_by(|first, second| {
+        second
+            .edit_count
+            .cmp(&first.edit_count)
+            .then_with(|| second.read_count.cmp(&first.read_count))
+            .then_with(|| first.display_path.cmp(&second.display_path))
+    });
+
+    Ok(changes)
 }
 
-fn iso_to_local_bucket(iso: &str) -> Option<(u8, u8)> {
-    let parsed = DateTime::parse_from_rfc3339(iso).ok()?;
-    let local: DateTime<Local> = parsed.with_timezone(&Local);
-    Some((
-        local.weekday().num_days_from_sunday() as u8,
-        local.hour() as u8,
-    ))
+/// Returns (file_path, entries, is_read). `entries` is empty for Read calls.
+fn extract_file_change_entries(
+    tool_name: &str,
+    input: &Value,
+    timestamp: &Option<String>,
+    tool_use_id: &Option<String>,
+) -> Option<(String, Vec<FileEditEntry>, bool)> {
+    let pick = |key: &str| -> Option<String> {
+        input.get(key).and_then(|val| val.as_str()).map(String::from)
+    };
+
+    match tool_name {
+        "Read" | "read" => {
+            let path = pick("file_path")?;
+            Some((path, Vec::new(), true))
+        }
+        "Write" | "write" => {
+            let path = pick("file_path")?;
+            Some((
+                path,
+                vec![FileEditEntry {
+                    timestamp: timestamp.clone(),
+                    action: "write".to_string(),
+                    old_string: None,
+                    new_string: pick("content"),
+                    tool_use_id: tool_use_id.clone(),
+                    replace_all: false,
+                }],
+                false,
+            ))
+        }
+        "Edit" | "edit" => {
+            let path = pick("file_path")?;
+            let replace_all = input
+                .get("replace_all")
+                .and_then(|val| val.as_bool())
+                .unwrap_or(false);
+            Some((
+                path,
+                vec![FileEditEntry {
+                    timestamp: timestamp.clone(),
+                    action: "edit".to_string(),
+                    old_string: pick("old_string"),
+                    new_string: pick("new_string"),
+                    tool_use_id: tool_use_id.clone(),
+                    replace_all,
+                }],
+                false,
+            ))
+        }
+        "MultiEdit" | "multiedit" => {
+            let path = pick("file_path")?;
+            let edits_array = input.get("edits").and_then(|val| val.as_array())?;
+            let mut entries: Vec<FileEditEntry> = Vec::with_capacity(edits_array.len());
+            for edit in edits_array {
+                entries.push(FileEditEntry {
+                    timestamp: timestamp.clone(),
+                    action: "multiedit".to_string(),
+                    old_string: edit.get("old_string").and_then(|val| val.as_str()).map(String::from),
+                    new_string: edit.get("new_string").and_then(|val| val.as_str()).map(String::from),
+                    tool_use_id: tool_use_id.clone(),
+                    replace_all: edit
+                        .get("replace_all")
+                        .and_then(|val| val.as_bool())
+                        .unwrap_or(false),
+                });
+            }
+            Some((path, entries, false))
+        }
+        "NotebookEdit" | "notebookedit" => {
+            let path = pick("notebook_path").or_else(|| pick("file_path"))?;
+            Some((
+                path,
+                vec![FileEditEntry {
+                    timestamp: timestamp.clone(),
+                    action: "notebookedit".to_string(),
+                    old_string: pick("old_source"),
+                    new_string: pick("new_source").or_else(|| pick("new_string")),
+                    tool_use_id: tool_use_id.clone(),
+                    replace_all: false,
+                }],
+                false,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn build_display_path(project_path: &str, project_name: &str, file_path: &str) -> String {
+    if project_path.is_empty() || project_name.is_empty() {
+        return file_path.to_string();
+    }
+    let prefix = format!("{}/", project_path);
+    if let Some(relative) = file_path.strip_prefix(&prefix) {
+        return format!("{} / {}", project_name, relative);
+    }
+    if file_path == project_path {
+        return project_name.to_string();
+    }
+    file_path.to_string()
 }
 
 #[tauri::command]
