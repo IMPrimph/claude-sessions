@@ -1,0 +1,64 @@
+name: Track downloads
+
+# Snapshots release download counts once a day and appends them to stats/downloads.jsonl,
+# so we have history over time (the GitHub API only exposes the current count).
+# No third-party tracking — this reads the repo's own release data.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch: {}    # allow manual runs
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Append today's download snapshot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p stats
+
+          releases_json=$(gh api "repos/${{ github.repository }}/releases" --paginate)
+
+          today=$(date -u +%Y-%m-%d)
+          total_installs=$(echo "$releases_json" | jq '[.[].assets[] | select(.name | endswith(".dmg")) | .download_count] | add // 0')
+          updater_bundles=$(echo "$releases_json" | jq '[.[].assets[] | select(.name | endswith(".app.tar.gz")) | .download_count] | add // 0')
+          latest_tag=$(echo "$releases_json" | jq -r '[.[] | select(.draft == false)] | sort_by(.published_at) | reverse | .[0].tag_name')
+          latest_launchchecks=$(echo "$releases_json" | jq '[.[] | select(.draft == false)] | sort_by(.published_at) | reverse | .[0] | [.assets[] | select(.name == "latest.json") | .download_count] | add // 0')
+
+          snapshot=$(jq -n -c \
+            --arg date "$today" \
+            --argjson installs "$total_installs" \
+            --argjson bundles "$updater_bundles" \
+            --arg tag "$latest_tag" \
+            --argjson launchchecks "$latest_launchchecks" \
+            '{date: $date, total_installs: $installs, updater_bundles: $bundles, latest_tag: $tag, latest_launchchecks: $launchchecks}')
+
+          # Replace today's line if it already exists, else append.
+          touch stats/downloads.jsonl
+          grep -v "\"date\":\"$today\"" stats/downloads.jsonl > stats/downloads.tmp || true
+          echo "$snapshot" >> stats/downloads.tmp
+          mv stats/downloads.tmp stats/downloads.jsonl
+
+          echo "Snapshot: $snapshot"
+
+      - name: Commit if changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet stats/downloads.jsonl; then
+            echo "No change — skipping commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add stats/downloads.jsonl
+          git commit -m "stats: download snapshot $(date -u +%Y-%m-%d) [skip ci]"
+          git push

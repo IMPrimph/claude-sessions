@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css'
+import Analytics from '@vercel/analytics/astro'
 
 const REPO = "IMPrimph/claude-sessions"
 const VERSION = "0.6.0"
@@ -72,6 +73,10 @@ const features = [
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+    <!-- Vercel Web Analytics — cookieless, no PII. Enable it in the Vercel dashboard
+         (Analytics tab → Enable) for these events to be recorded. -->
+    <Analytics />
   </head>
   <body class="bg-[#08080f] text-[#c8c8e0] antialiased overflow-x-hidden">
 
