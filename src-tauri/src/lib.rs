@@ -6,11 +6,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_projects,
             commands::scan_projects,
             commands::get_session_messages,
-            commands::get_session_tokens,
+            commands::get_project_tokens,
             commands::get_session_stats,
             commands::export_session_markdown,
             commands::list_subagents,

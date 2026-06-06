@@ -19,10 +19,14 @@
     session,
     messages,
     loading,
+    scrollToTimestamp = null,
   }: {
     session: SessionInfo | null;
     messages: ConversationMessage[];
     loading: boolean;
+    // When set (e.g. arriving from a bookmark), scroll to the message with this
+    // timestamp and briefly highlight it.
+    scrollToTimestamp?: string | null;
   } = $props();
 
   let stats: SessionStats | null = $state(null);
@@ -221,6 +225,31 @@
       scrollContainer.scrollTop = 0;
       messageSearchQuery = "";
     }
+  });
+
+  // Jump-to-message (from a bookmark): once messages are loaded, find the one with
+  // the target timestamp, scroll it into view, and flash it. Guarded so it fires
+  // once per (session, timestamp) and never re-triggers on later manual scrolls.
+  let flashIndex = $state<number | null>(null);
+  let lastScrolledKey = "";
+  $effect(() => {
+    const targetTimestamp = scrollToTimestamp;
+    if (!targetTimestamp || !session || messages.length === 0 || !scrollContainer) return;
+    const key = `${session.session_id}::${targetTimestamp}`;
+    if (key === lastScrolledKey) return;
+    const targetIndex = messages.findIndex((message) => message.timestamp === targetTimestamp);
+    if (targetIndex === -1) return;
+    lastScrolledKey = key;
+    requestAnimationFrame(() => {
+      const elements = scrollContainer!.querySelectorAll("[data-msg-index]");
+      const target = elements[targetIndex];
+      if (!target) return;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      flashIndex = targetIndex;
+      setTimeout(() => {
+        if (flashIndex === targetIndex) flashIndex = null;
+      }, 2200);
+    });
   });
 
   function handleScroll() {
@@ -625,6 +654,7 @@
               data-msg-index={index}
               class:search-highlight={messageSearchQuery && matchedMessageIndices.includes(index)}
               class:search-active={messageSearchQuery && matchedMessageIndices[currentMatchIndex] === index}
+              class:bookmark-flash={flashIndex === index}
             >
               <MessageBubble
                 {message}
@@ -633,6 +663,7 @@
                 onImageOpen={openLightbox}
                 onAgentOpen={handleAgentOpen}
                 {toolResults}
+                bookmarkSession={session}
               />
             </div>
           {/each}
@@ -1005,6 +1036,16 @@
     border-left: 3px solid #f59e0b;
     background: rgba(245, 158, 11, 0.05);
     border-radius: 4px;
+  }
+
+  .bookmark-flash {
+    border-radius: 8px;
+    animation: bookmark-flash-fade 2.2s ease-out;
+  }
+
+  @keyframes bookmark-flash-fade {
+    0% { background: rgba(245, 158, 11, 0.22); }
+    100% { background: transparent; }
   }
 
   .messages-wrapper {

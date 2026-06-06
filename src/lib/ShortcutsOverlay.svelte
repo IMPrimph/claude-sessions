@@ -18,6 +18,7 @@
     { keys: ["Shift", "Enter"], description: "Jump to previous match" },
     { keys: ["↑", "↓"], description: "Navigate between sessions in the sidebar" },
     { keys: [meta, ","], description: "Open settings" },
+    { keys: ["B"], description: "Open / close bookmarks" },
     { keys: ["Esc"], description: "Close panels, dialogs, and search" },
     { keys: ["?"], description: "Show this help" },
   ];

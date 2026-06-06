@@ -2,18 +2,23 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { ProjectInfo, GlobalSearchResult } from "./types";
   import { preferences, toggleDateFormat } from "./preferences.svelte";
+  import { bookmarks } from "./bookmarks.svelte";
 
   let {
     projects,
     onSelect,
     onOpenResult,
     onCheckUpdates,
+    onOpenBookmarks,
   }: {
     projects: ProjectInfo[];
     onSelect: (project: ProjectInfo) => void;
     onOpenResult: (result: GlobalSearchResult) => void;
     onCheckUpdates?: () => void;
+    onOpenBookmarks?: () => void;
   } = $props();
+
+  let bookmarkCount = $derived(bookmarks.length);
 
   function formatLastActive(project: ProjectInfo): string {
     if (preferences.dateFormat === "absolute") {
@@ -131,7 +136,13 @@
   <div class="project-header">
     <div class="title-row">
       <h1>Claude Sessions</h1>
-      <span class="version-badge">v0.6.0</span>
+      <span class="version-badge">v0.7.0</span>
+      {#if onOpenBookmarks}
+        <button class="update-check-btn" onclick={onOpenBookmarks} title="View bookmarks">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          Bookmarks{#if bookmarkCount > 0}<span class="bookmark-count">{bookmarkCount}</span>{/if}
+        </button>
+      {/if}
       <button class="update-check-btn" onclick={toggleDateFormat} title="Toggle relative / absolute dates">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
@@ -316,6 +327,17 @@
     color: #c0c0d8;
     border-color: #3a3a5a;
     background: rgba(255, 255, 255, 0.03);
+  }
+
+  .bookmark-count {
+    margin-left: 5px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #a5b4fc;
+    background: rgba(99, 102, 241, 0.18);
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-variant-numeric: tabular-nums;
   }
 
   .subtitle {

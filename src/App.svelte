@@ -7,12 +7,15 @@
     SessionInfo,
     ConversationMessage,
     GlobalSearchResult,
+    Bookmark,
   } from "./lib/types";
   import ProjectGrid from "./lib/ProjectGrid.svelte";
   import SessionList from "./lib/SessionList.svelte";
   import ConversationView from "./lib/ConversationView.svelte";
   import ShortcutsOverlay from "./lib/ShortcutsOverlay.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
+  import BookmarksView from "./lib/BookmarksView.svelte";
+  import { bookmarks } from "./lib/bookmarks.svelte";
 
   let projects: ProjectInfo[] = $state([]);
   let selectedProject: ProjectInfo | null = $state(null);
@@ -24,6 +27,10 @@
   let initialLoading = $state(true);
   let sortOrder: "newest" | "oldest" = $state("newest");
   let sessionTokenMap: Map<string, number> = $state(new Map());
+  let showBookmarks = $state(false);
+  // Set right before loading a session from a bookmark so ConversationView scrolls
+  // to the bookmarked message. Cleared on a normal session selection.
+  let pendingScrollTimestamp: string | null = $state(null);
 
   let sortedSessions = $derived(
     sortOrder === "newest" ? sessions : [...sessions].reverse()
@@ -67,22 +74,19 @@
     tokenLoaderGeneration += 1;
     const myGeneration = tokenLoaderGeneration;
     sessionTokenMap = new Map();
+    if (sessionList.length === 0) return;
 
-    for (const session of sessionList) {
+    try {
+      // One call returns the whole project's totals (session_id → tokens) instead
+      // of a per-session IPC round-trip.
+      const totals = await invoke<Record<string, number>>("get_project_tokens", {
+        jsonlPaths: sessionList.map((session) => session.jsonl_path),
+      });
+      // Stale guard: the user may have switched projects while the scan ran.
       if (myGeneration !== tokenLoaderGeneration) return;
-      try {
-        const tokens = await invoke<number>("get_session_tokens", {
-          jsonlPath: session.jsonl_path,
-        });
-        // Re-check after the await: the user may have navigated away while the
-        // Rust scan was running. Don't write stale data into sessionTokenMap.
-        if (myGeneration !== tokenLoaderGeneration) return;
-        if (tokens > 0) {
-          sessionTokenMap = new Map(sessionTokenMap).set(session.session_id, tokens);
-        }
-      } catch {
-        // Skip failures silently
-      }
+      sessionTokenMap = new Map(Object.entries(totals));
+    } catch {
+      // Token badges are optional — silent failure is fine
     }
   }
 
@@ -92,6 +96,7 @@
     sessions = [];
     sessionTokenMap = new Map();
     messages = [];
+    pendingScrollTimestamp = null;
   }
 
   let refreshing = $state(false);
@@ -131,8 +136,9 @@
     }
   }
 
-  async function selectSession(session: SessionInfo) {
+  async function selectSession(session: SessionInfo, scrollTimestamp: string | null = null) {
     selectedSession = session;
+    pendingScrollTimestamp = scrollTimestamp;
     loadingMessages = true;
     messages = [];
 
@@ -144,6 +150,28 @@
       console.error("Failed to load messages:", loadError);
     } finally {
       loadingMessages = false;
+    }
+  }
+
+  // Navigate from a bookmark: open its project + session and scroll to the message.
+  // Works even if the project isn't in the loaded list (synthesize a minimal entry).
+  async function openBookmark(bookmark: Bookmark) {
+    showBookmarks = false;
+    let project = projects.find((entry) => entry.project_path === bookmark.project_path);
+    if (!project) {
+      project = {
+        project_path: bookmark.project_path,
+        project_name: bookmark.project_name,
+        short_path: bookmark.project_path,
+        session_count: 0,
+        last_active: null,
+        last_active_ms: 0,
+      };
+    }
+    await selectProject(project);
+    const targetSession = sessions.find((entry) => entry.session_id === bookmark.session_id);
+    if (targetSession) {
+      await selectSession(targetSession, bookmark.timestamp);
     }
   }
 
@@ -239,6 +267,12 @@
     if (event.key === "?" || (event.key === "/" && event.shiftKey)) {
       event.preventDefault();
       showShortcuts = true;
+      return;
+    }
+    // `b` toggles the bookmarks view (plain key — modifiers reserved for the OS/app)
+    if ((event.key === "b" || event.key === "B") && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault();
+      showBookmarks = !showBookmarks;
     }
   }
 </script>
@@ -293,6 +327,18 @@
 <div class="floating-actions">
   <button
     class="floating-action-btn"
+    class:floating-action-active={showBookmarks}
+    onclick={() => (showBookmarks = !showBookmarks)}
+    title="Bookmarks"
+    aria-label="Bookmarks"
+  >
+    <svg width="14" height="14" viewBox="0 0 24 24" fill={showBookmarks ? "currentColor" : "none"} stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+    {#if bookmarks.length > 0}
+      <span class="floating-badge">{bookmarks.length}</span>
+    {/if}
+  </button>
+  <button
+    class="floating-action-btn"
     onclick={() => (showSettings = true)}
     title="Settings (⌘,)"
     aria-label="Open settings"
@@ -323,8 +369,10 @@
       <div class="loading-spinner"></div>
       <p>Loading projects...</p>
     </div>
+  {:else if showBookmarks}
+    <BookmarksView onBack={() => (showBookmarks = false)} onJump={openBookmark} />
   {:else if !selectedProject}
-    <ProjectGrid {projects} onSelect={selectProject} onOpenResult={openSearchResult} onCheckUpdates={() => checkForUpdates(true)} />
+    <ProjectGrid {projects} onSelect={selectProject} onOpenResult={openSearchResult} onCheckUpdates={() => checkForUpdates(true)} onOpenBookmarks={() => (showBookmarks = true)} />
   {:else}
     <div class="app-layout">
       <aside class="sidebar">
@@ -371,6 +419,7 @@
           session={selectedSession}
           {messages}
           loading={loadingMessages}
+          scrollToTimestamp={pendingScrollTimestamp}
         />
       </section>
     </div>
@@ -427,6 +476,34 @@
     background: #2a2a4a;
     color: #c7d2fe;
     border-color: rgba(99, 102, 241, 0.4);
+  }
+
+  .floating-action-btn.floating-action-active {
+    background: rgba(99, 102, 241, 0.2);
+    color: #c7d2fe;
+    border-color: rgba(99, 102, 241, 0.5);
+  }
+
+  .floating-action-btn {
+    position: relative;
+  }
+
+  .floating-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: #6366f1;
+    color: white;
+    font-size: 10px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
   }
 
   .floating-action-btn-help {

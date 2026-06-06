@@ -1,7 +1,9 @@
 <script lang="ts">
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-  import type { ConversationMessage, ToolResultPayload } from "./types";
+  import type { ConversationMessage, SessionInfo, ToolResultPayload } from "./types";
   import { prettyToolName } from "./format";
+  import { copyToClipboard } from "./clipboard";
+  import { isBookmarked, toggleBookmark, makeBookmarkId } from "./bookmarks.svelte";
 
   let {
     message,
@@ -10,6 +12,7 @@
     onImageOpen,
     onAgentOpen,
     toolResults,
+    bookmarkSession = null,
   }: {
     message: ConversationMessage;
     searchQuery?: string;
@@ -17,6 +20,9 @@
     onImageOpen?: (url: string, label: string) => void;
     onAgentOpen?: (agentId: string, description: string) => void;
     toolResults?: Record<string, ToolResultPayload>;
+    // When provided, a bookmark (star) button is shown on user/assistant messages.
+    // Subagent transcripts pass nothing, so they aren't bookmarkable in v1.
+    bookmarkSession?: SessionInfo | null;
   } = $props();
 
   // Track which tool pills are expanded by tool_use_id (per-message state)
@@ -212,15 +218,25 @@
       Read: "#22d3ee",
       Write: "#a78bfa",
       Edit: "#f59e0b",
+      MultiEdit: "#f59e0b",
+      NotebookEdit: "#f59e0b",
       Bash: "#f97316",
       Grep: "#34d399",
       Glob: "#34d399",
       Agent: "#818cf8",
       Skill: "#ec4899",
+      Workflow: "#f472b6",
       TaskCreate: "#6366f1",
       TaskUpdate: "#6366f1",
       TaskGet: "#6366f1",
       TaskList: "#6366f1",
+      TaskStop: "#6366f1",
+      WebSearch: "#38bdf8",
+      WebFetch: "#38bdf8",
+      ToolSearch: "#2dd4bf",
+      AskUserQuestion: "#fbbf24",
+      Monitor: "#fb923c",
+      ScheduleWakeup: "#a3e635",
     };
     return colors[name] || "#7a7a9a";
   }
@@ -386,21 +402,18 @@
     const codeElement = wrapper?.querySelector("pre code");
     if (!codeElement) return;
 
-    navigator.clipboard.writeText(codeElement.textContent || "");
+    copyToClipboard(codeElement.textContent || "");
     target.textContent = "Copied!";
     setTimeout(() => {
       target.textContent = "Copy";
     }, 1500);
   }
 
-  let copied = $state(false);
-
-  async function copyText() {
-    let text = message.text;
-    // For assistant messages, strip internal markers so the clipboard gets clean prose.
-    // Tool calls become bracketed labels, thinking blocks are dropped entirely.
+  // Clean, copyable text. For assistant messages, strip internal markers so the
+  // clipboard gets clean prose: tool calls become bracketed labels, thinking dropped.
+  function buildCopyText(): string {
     if (message.role === "assistant") {
-      text = assistantSegments
+      return assistantSegments
         .map((segment) => {
           if (segment.kind === "text") return segment.content;
           if (segment.kind === "tool") {
@@ -412,9 +425,40 @@
         .filter(Boolean)
         .join("\n\n");
     }
-    await navigator.clipboard.writeText(text);
+    return message.text;
+  }
+
+  let copied = $state(false);
+
+  async function copyText() {
+    await copyToClipboard(buildCopyText());
     copied = true;
     setTimeout(() => { copied = false; }, 1500);
+  }
+
+  // ── Bookmarks ──
+  let bookmarkId = $derived(
+    bookmarkSession && message.role !== "compaction"
+      ? makeBookmarkId(bookmarkSession.session_id, message.timestamp, message.text)
+      : ""
+  );
+  let bookmarked = $derived(bookmarkId !== "" && isBookmarked(bookmarkId));
+
+  function toggleBookmarkForMessage() {
+    if (!bookmarkSession || bookmarkId === "") return;
+    const cleanText = buildCopyText();
+    toggleBookmark({
+      id: bookmarkId,
+      role: message.role === "assistant" ? "assistant" : "user",
+      text: cleanText,
+      preview: cleanText.replace(/\s+/g, " ").trim().slice(0, 160),
+      project_path: bookmarkSession.project_path,
+      project_name: bookmarkSession.project_name,
+      session_id: bookmarkSession.session_id,
+      jsonl_path: bookmarkSession.jsonl_path,
+      timestamp: message.timestamp,
+      created_at: Date.now(),
+    });
   }
 </script>
 
@@ -477,6 +521,15 @@
       {/each}
     </div>
     <div class="user-actions">
+      {#if bookmarkSession}
+        <button class="copy-btn bookmark-btn" class:bookmarked onclick={toggleBookmarkForMessage} title={bookmarked ? "Remove bookmark" : "Save for later"} aria-label="Bookmark message">
+          {#if bookmarked}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          {:else}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          {/if}
+        </button>
+      {/if}
       <button class="copy-btn" class:copied onclick={copyText} title="Copy message">
         {#if copied}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
@@ -585,6 +638,15 @@
       {/each}
     </div>
     <div class="assistant-actions">
+      {#if bookmarkSession}
+        <button class="copy-btn bookmark-btn" class:bookmarked onclick={toggleBookmarkForMessage} title={bookmarked ? "Remove bookmark" : "Save for later"} aria-label="Bookmark message">
+          {#if bookmarked}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          {:else}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          {/if}
+        </button>
+      {/if}
       <button class="copy-btn" class:copied onclick={copyText} title="Copy message">
         {#if copied}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
@@ -758,6 +820,8 @@
 
   .user-row:hover .user-actions { opacity: 1; }
   .user-actions:has(.copied) { opacity: 1; }
+  /* Keep the bar visible when saved, so the filled star is always shown. */
+  .user-actions:has(.bookmarked) { opacity: 1; }
 
   .assistant-actions {
     display: flex;
@@ -770,6 +834,7 @@
 
   .assistant-row:hover .assistant-actions { opacity: 1; }
   .assistant-actions:has(.copied) { opacity: 1; }
+  .assistant-actions:has(.bookmarked) { opacity: 1; }
 
   .copy-btn {
     background: transparent;
@@ -787,6 +852,8 @@
 
   .copy-btn:hover { background: rgba(255, 255, 255, 0.06); color: #c0c0d8; }
   .copy-btn.copied { color: #34d399; }
+  .bookmark-btn:hover { color: #fbbf24; }
+  .bookmark-btn.bookmarked { color: #f59e0b; }
 
   /* ── Assistant messages ── */
 

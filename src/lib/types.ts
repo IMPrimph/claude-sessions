@@ -83,6 +83,19 @@ export interface FileChange {
   read_count: number;
 }
 
+export interface Bookmark {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  preview: string;
+  project_path: string;
+  project_name: string;
+  session_id: string;
+  jsonl_path: string;
+  timestamp: string;
+  created_at: number;
+}
+
 export interface SessionStats {
   input_tokens: number;
   output_tokens: number;

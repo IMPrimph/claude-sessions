@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SessionInfo } from "./types";
   import { preferences, toggleDateFormat } from "./preferences.svelte";
+  import { formatTokenCompact } from "./format";
 
   let {
     sessions,
@@ -75,12 +76,6 @@
     } else {
       return date.toLocaleDateString([], { month: "short", day: "numeric" });
     }
-  }
-
-  function formatTokens(tokens: number): string {
-    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-    if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
-    return `${tokens}`;
   }
 
   function displayName(session: SessionInfo): string {
@@ -272,7 +267,7 @@
             {/if}
             {#if tokenMap.get(session.session_id) !== undefined}
               <span class="stat-badge" title="Tokens (input + output)">
-                {formatTokens(tokenMap.get(session.session_id)!)}
+                {formatTokenCompact(tokenMap.get(session.session_id)!)}
               </span>
             {/if}
             <span class="session-date">{formatDate(session.modified)}</span>

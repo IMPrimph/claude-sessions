@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ── Types returned to the frontend ──────────────────────────────────────────
 
@@ -398,7 +398,7 @@ pub fn get_projects() -> Result<Vec<ProjectInfo>, String> {
 
         let project_name = original_path
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or(&original_path)
             .to_string();
 
@@ -462,7 +462,7 @@ pub fn get_projects() -> Result<Vec<ProjectInfo>, String> {
     Ok(projects)
 }
 
-fn resolve_project_path(project_dir: &PathBuf, dir_name: &str) -> String {
+fn resolve_project_path(project_dir: &Path, dir_name: &str) -> String {
     let index_path = project_dir.join("sessions-index.json");
     if index_path.exists() {
         if let Ok(content) = fs::read_to_string(&index_path) {
@@ -547,7 +547,7 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
 
                     let project_name = original_path
                         .split('/')
-                        .last()
+                        .next_back()
                         .unwrap_or(&original_path)
                         .to_string();
 
@@ -637,7 +637,7 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
         let decoded_path = decode_project_path(&dir_name);
         let project_name = decoded_path
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or(&decoded_path)
             .to_string();
 
@@ -728,7 +728,7 @@ pub fn global_search(query: String) -> Result<Vec<GlobalSearchResult>, String> {
         let original_path = resolve_project_path(&project_dir, &dir_name);
         let project_name = original_path
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or(&original_path)
             .to_string();
 
@@ -788,7 +788,7 @@ pub fn global_search(query: String) -> Result<Vec<GlobalSearchResult>, String> {
             let reader = BufReader::new(file);
             let mut found_in_session = false;
 
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 if found_in_session {
                     break;
                 }
@@ -993,21 +993,19 @@ pub fn get_session_stats(jsonl_path: String) -> Result<SessionStats, String> {
     Ok(stats)
 }
 
-#[tauri::command]
-pub fn get_session_tokens(jsonl_path: String) -> Result<u64, String> {
-    let path = PathBuf::from(&jsonl_path);
-    if !path.exists() {
-        return Err(format!("Session file not found: {}", jsonl_path));
-    }
-
-    let file = fs::File::open(&path)
-        .map_err(|open_error| format!("Cannot open file: {}", open_error))?;
+/// Sum input+output tokens for a single session, de-duped by requestId (streaming
+/// emits multiple usage lines per request). Returns 0 on any read error.
+fn count_session_tokens(path: &Path) -> u64 {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return 0,
+    };
     let reader = BufReader::new(file);
 
     let mut token_by_request: std::collections::HashMap<String, u64> =
         std::collections::HashMap::new();
 
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         if !line.contains("\"type\":\"assistant\"") || !line.contains("\"usage\"") {
             continue;
         }
@@ -1022,7 +1020,28 @@ pub fn get_session_tokens(jsonl_path: String) -> Result<u64, String> {
         }
     }
 
-    Ok(token_by_request.values().sum())
+    token_by_request.values().sum()
+}
+
+/// Token totals for a whole project in one call (session_id → tokens), avoiding a
+/// per-session IPC round-trip. Sessions with zero tokens or read errors are omitted.
+#[tauri::command]
+pub fn get_project_tokens(
+    jsonl_paths: Vec<String>,
+) -> Result<std::collections::HashMap<String, u64>, String> {
+    let mut totals: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for path_string in jsonl_paths {
+        let path = PathBuf::from(&path_string);
+        let session_id = match path.file_stem().and_then(|stem| stem.to_str()) {
+            Some(stem) => stem.to_string(),
+            None => continue,
+        };
+        let tokens = count_session_tokens(&path);
+        if tokens > 0 {
+            totals.insert(session_id, tokens);
+        }
+    }
+    Ok(totals)
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1457,7 +1476,7 @@ pub fn get_subagent_messages(jsonl_path: String) -> Result<Vec<ConversationMessa
         };
 
         if entry_type == "assistant" {
-            if let (Some(ref pending), Some(ref current_rid)) =
+            if let (Some(pending), Some(current_rid)) =
                 (pending_assistant.as_ref(), entry.request_id.as_ref())
             {
                 if pending.request_id.as_ref() == Some(current_rid) {
@@ -1562,7 +1581,7 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
 
         // Assistant entries: maybe buffer for dedup, maybe commit previous pending
         if entry_type == "assistant" {
-            if let (Some(ref pending), Some(ref current_rid)) =
+            if let (Some(pending), Some(current_rid)) =
                 (pending_assistant.as_ref(), entry.request_id.as_ref())
             {
                 if pending.request_id.as_ref() == Some(current_rid) {
@@ -1670,7 +1689,7 @@ fn process_user_entry(
     entry: JsonlEntry,
     messages: &mut Vec<ConversationMessage>,
     current_assistant_text: &mut String,
-    current_assistant_timestamp: &mut String,
+    current_assistant_timestamp: &mut str,
     in_assistant_turn: &mut bool,
 ) {
     // Compaction summaries are special
@@ -1717,14 +1736,14 @@ fn process_user_entry(
 fn flush_assistant(
     messages: &mut Vec<ConversationMessage>,
     current_text: &mut String,
-    current_timestamp: &mut String,
+    current_timestamp: &mut str,
     in_turn: &mut bool,
 ) {
     if *in_turn && !current_text.is_empty() {
         messages.push(ConversationMessage {
             role: "assistant".to_string(),
             text: current_text.clone(),
-            timestamp: current_timestamp.clone(),
+            timestamp: current_timestamp.to_string(),
             images: Vec::new(),
         });
         current_text.clear();
@@ -1824,18 +1843,57 @@ fn is_tool_result_content(message: &Option<JsonlMessage>) -> bool {
 
 /// Strip system/meta tags and ANSI escape sequences that shouldn't be displayed
 fn strip_system_tags(text: &str) -> String {
+    // Slash-command invocations are stored as
+    //   <command-name>/foo</command-name> <command-message>foo</command-message> <command-args>ARGS</command-args>
+    // The args hold what the user actually typed after the command (often a long
+    // prompt, e.g. `/compact <detailed instructions>`), so they MUST be preserved.
+    // Reconstruct the command as "/foo ARGS" — this both keeps the content and reads
+    // cleanly, instead of leaving the inter-tag whitespace a generic strip would.
+    if let Some(reconstructed) = reconstruct_slash_command(text) {
+        return strip_ansi(&reconstructed).trim().to_string();
+    }
+
+    // Tags whose entire block is noise and should be removed wholesale.
     const DROP_TAGS: &[&str] = &[
         "system-reminder",
         "local-command-caveat",
         "local-command-stdout",
         "local-command-stderr",
-        "command-args",
     ];
-    const UNWRAP_TAGS: &[&str] = &["command-name", "command-message"];
+    // Tags whose wrapper is removed but inner text kept. command-args is included as
+    // a safety net so any malformed command entry still keeps the user's content.
+    const UNWRAP_TAGS: &[&str] = &["command-name", "command-message", "command-args"];
 
     let mut result = strip_paired_tags(text, DROP_TAGS, false);
     result = strip_paired_tags(&result, UNWRAP_TAGS, true);
     strip_ansi(&result).trim().to_string()
+}
+
+/// If `text` is a slash-command invocation, rebuild it as "<name> <args>".
+/// Returns None for ordinary messages (no `<command-name>` tag).
+fn reconstruct_slash_command(text: &str) -> Option<String> {
+    let name = extract_tag_inner(text, "command-name")?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let args = extract_tag_inner(text, "command-args").unwrap_or_default();
+    let args = args.trim();
+    if args.is_empty() {
+        Some(name.to_string())
+    } else {
+        Some(format!("{} {}", name, args))
+    }
+}
+
+/// Return the inner text of the first `<tag>...</tag>` pair, or None if not present
+/// (or unclosed). Used to safely pull slash-command fields without dropping content.
+fn extract_tag_inner(text: &str, tag: &str) -> Option<String> {
+    let open_tag = format!("<{}>", tag);
+    let close_tag = format!("</{}>", tag);
+    let inner_start = text.find(&open_tag)? + open_tag.len();
+    let inner_end = text[inner_start..].find(&close_tag)? + inner_start;
+    Some(text[inner_start..inner_end].to_string())
 }
 
 /// Remove `<tag>...</tag>` blocks. If `keep_inner` is true, the inner text is kept.
@@ -1850,7 +1908,7 @@ fn strip_paired_tags(text: &str, tags: &[&str], keep_inner: bool) -> String {
             let open = format!("<{}>", tag);
             if let Some(found) = text[cursor..].find(&open) {
                 let abs = cursor + found;
-                if earliest.map_or(true, |(earlier, _)| abs < earlier) {
+                if earliest.is_none_or(|(earlier, _)| abs < earlier) {
                     earliest = Some((abs, *tag));
                 }
             }
@@ -1870,7 +1928,10 @@ fn strip_paired_tags(text: &str, tags: &[&str], keep_inner: bool) -> String {
                         cursor = inner_start + close_offset + close.len();
                     }
                     None => {
-                        // Unclosed — drop everything from the open tag onward
+                        // Unclosed tag: don't silently swallow the rest of the message
+                        // (that loses real user content). Keep everything from the open
+                        // tag onward as literal text instead.
+                        output.push_str(&text[open_start..]);
                         return output;
                     }
                 }
@@ -1921,7 +1982,7 @@ fn get_claude_projects_dir() -> Result<PathBuf, String> {
     Ok(claude_projects)
 }
 
-fn get_file_mtime_iso(path: &PathBuf) -> Option<String> {
+fn get_file_mtime_iso(path: &Path) -> Option<String> {
     let metadata = path.metadata().ok()?;
     let modified = metadata.modified().ok()?;
     let datetime: chrono::DateTime<chrono::Utc> = modified.into();
@@ -2069,16 +2130,65 @@ fn format_tool_use(
             let description = input.get("description").and_then(|desc| desc.as_str()).unwrap_or("subagent");
             description.to_string()
         }
-        "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" => {
+        "TaskCreate" | "TaskGet" | "TaskList" => {
             let subject = input.get("subject").and_then(|subj| subj.as_str()).unwrap_or("");
             subject.to_string()
+        }
+        "TaskUpdate" => {
+            // Usually just taskId + status; fall back to whichever is present.
+            if let Some(subject) = input.get("subject").and_then(|subj| subj.as_str()) {
+                subject.to_string()
+            } else {
+                let task_id = input.get("taskId").and_then(|val| val.as_str()).unwrap_or("");
+                let status = input.get("status").and_then(|val| val.as_str()).unwrap_or("");
+                format!("#{} {}", task_id, status).trim().to_string()
+            }
+        }
+        "TaskStop" => {
+            input.get("task_id").and_then(|val| val.as_str()).unwrap_or("").to_string()
         }
         "Skill" | "skill" => {
             let skill_name = input.get("skill").and_then(|skill| skill.as_str()).unwrap_or("");
             skill_name.to_string()
         }
+        "Workflow" => extract_workflow_label(input),
+        "WebSearch" => {
+            input.get("query").and_then(|val| val.as_str()).unwrap_or("").to_string()
+        }
+        "WebFetch" => {
+            input.get("url").and_then(|val| val.as_str()).unwrap_or("").to_string()
+        }
+        "ToolSearch" => {
+            input.get("query").and_then(|val| val.as_str()).unwrap_or("").to_string()
+        }
+        "AskUserQuestion" => {
+            // New shape: { questions: [{ question, ... }] }; older shape: { question }.
+            input
+                .get("questions")
+                .and_then(|val| val.as_array())
+                .and_then(|questions| questions.first())
+                .and_then(|first| first.get("question"))
+                .and_then(|val| val.as_str())
+                .or_else(|| input.get("question").and_then(|val| val.as_str()))
+                .unwrap_or("")
+                .to_string()
+        }
+        "Monitor" => input
+            .get("command")
+            .or_else(|| input.get("description"))
+            .or_else(|| input.get("bash_id"))
+            .and_then(|val| val.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "ScheduleWakeup" => {
+            input.get("reason").and_then(|val| val.as_str()).unwrap_or("").to_string()
+        }
         _ => String::new(),
     };
+
+    // Keep pill summaries tidy — long inputs (questions, URLs, reasons) get capped.
+    // The frontend also ellipsizes, but capping here keeps message.text from bloating.
+    let summary: String = summary.chars().take(200).collect();
 
     // Escape pipe in summary to avoid breaking the marker format
     let safe_summary = summary.replace('|', "/");
@@ -2103,6 +2213,39 @@ fn format_tool_use(
         "{{{{TOOL:{}|{}{}}}}}",
         tool_name, safe_summary, suffix
     ))
+}
+
+/// Pick the best human label for a Workflow tool call. Inline scripts start with
+/// `export const meta = { name: '...' }`, so prefer that name; otherwise fall back
+/// to the description, the script file's basename, or a generic label.
+fn extract_workflow_label(input: &Value) -> String {
+    if let Some(script) = input.get("script").and_then(|val| val.as_str()) {
+        if let Some(name) = extract_meta_name(script) {
+            return name;
+        }
+    }
+    if let Some(description) = input.get("description").and_then(|val| val.as_str()) {
+        if !description.is_empty() {
+            return description.to_string();
+        }
+    }
+    if let Some(script_path) = input.get("scriptPath").and_then(|val| val.as_str()) {
+        return script_path.rsplit('/').next().unwrap_or(script_path).to_string();
+    }
+    "workflow".to_string()
+}
+
+/// Extract the first `name: '<value>'` from a workflow script's meta block.
+fn extract_meta_name(script: &str) -> Option<String> {
+    let after_name = &script[script.find("name:")? + "name:".len()..];
+    let trimmed = after_name.trim_start();
+    let quote = trimmed.chars().next()?;
+    if quote != '\'' && quote != '"' && quote != '`' {
+        return None;
+    }
+    let rest = &trimmed[quote.len_utf8()..];
+    let end = rest.find(quote)?;
+    Some(rest[..end].to_string())
 }
 
 struct SessionQuickMetadata {
@@ -2231,6 +2374,68 @@ fn update_timestamps_from_line(
             }
             *last_timestamp = Some(timestamp);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slash_command_args_are_preserved() {
+        // Regression for the copy/display truncation bug: a /compact prompt's long
+        // argument must survive intact instead of collapsing to the bare command.
+        let input = "<command-name>/compact</command-name>   <command-message>compact</command-message>   <command-args>Summarize the multi-phase redesign in detail and keep every decision</command-args>";
+        assert_eq!(
+            strip_system_tags(input),
+            "/compact Summarize the multi-phase redesign in detail and keep every decision"
+        );
+    }
+
+    #[test]
+    fn slash_command_without_args() {
+        let input = "<command-name>/clear</command-name>   <command-message>clear</command-message>";
+        assert_eq!(strip_system_tags(input), "/clear");
+    }
+
+    #[test]
+    fn local_command_stdout_is_dropped() {
+        let input = "<local-command-stdout>Login successful</local-command-stdout>";
+        assert_eq!(strip_system_tags(input), "");
+    }
+
+    #[test]
+    fn normal_long_prompt_is_unchanged() {
+        let input = "Please refactor the parser and make sure we handle every edge case carefully across all the files.";
+        assert_eq!(strip_system_tags(input), input);
+    }
+
+    #[test]
+    fn closed_system_reminder_is_removed_but_text_kept() {
+        let input = "Real question here<system-reminder>injected noise</system-reminder> and more text";
+        assert_eq!(strip_system_tags(input), "Real question here and more text");
+    }
+
+    #[test]
+    fn workflow_label_prefers_meta_name() {
+        let script = "export const meta = {\n  name: 'canvas-restructure-audit',\n  description: 'Audit the Canvas module',\n}";
+        let input = serde_json::json!({ "script": script });
+        assert_eq!(extract_workflow_label(&input), "canvas-restructure-audit");
+    }
+
+    #[test]
+    fn workflow_label_falls_back_to_script_path() {
+        let input = serde_json::json!({ "scriptPath": "/tmp/session/wf-review.js" });
+        assert_eq!(extract_workflow_label(&input), "wf-review.js");
+    }
+
+    #[test]
+    fn unclosed_drop_tag_does_not_swallow_following_content() {
+        // Hardening: an unclosed <system-reminder> must not delete everything after it.
+        let input = "Important user content that is quite long <system-reminder> oops no close tag here";
+        let out = strip_system_tags(input);
+        assert!(out.contains("Important user content that is quite long"), "got: {out:?}");
+        assert!(out.contains("oops no close tag here"), "got: {out:?}");
     }
 }
 
