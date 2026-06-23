@@ -638,6 +638,7 @@
     gap: 10px;
     padding: 12px 16px;
     border-bottom: 1px solid #2a2a4a;
+    flex-shrink: 0;
   }
 
   .back-btn {
@@ -728,6 +729,7 @@
   .main-content {
     flex: 1;
     min-width: 0;
+    min-height: 0;
   }
 
 </style>

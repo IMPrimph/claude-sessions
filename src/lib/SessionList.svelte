@@ -286,7 +286,8 @@
   .session-list {
     display: flex;
     flex-direction: column;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
     background: #1a1a2e;
   }
 
@@ -296,6 +297,7 @@
     justify-content: space-between;
     padding: 16px;
     border-bottom: 1px solid #2a2a4a;
+    flex-shrink: 0;
   }
 
   .session-list-header h2 {
@@ -330,6 +332,7 @@
 
   .search-bar {
     padding: 8px 16px;
+    flex-shrink: 0;
   }
 
   .search-bar input {

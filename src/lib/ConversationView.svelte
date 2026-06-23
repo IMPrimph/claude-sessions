@@ -734,6 +734,7 @@
     flex-direction: column;
     flex: 1;
     min-width: 0;
+    min-height: 0;
     height: 100%;
   }
 
@@ -761,6 +762,7 @@
     padding: 16px 24px;
     border-bottom: 1px solid #2a2a4a;
     background: #16162a;
+    flex-shrink: 0;
   }
 
   .session-title-row {
@@ -951,6 +953,7 @@
     border-bottom: 1px solid #2a2a4a;
     background: #16162a;
     color: #5a5a7a;
+    flex-shrink: 0;
   }
 
   .message-search-bar input {
@@ -1050,6 +1053,7 @@
 
   .messages-wrapper {
     flex: 1;
+    min-height: 0;
     position: relative;
     overflow: hidden;
   }

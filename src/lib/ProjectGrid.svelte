@@ -136,7 +136,7 @@
   <div class="project-header">
     <div class="title-row">
       <h1>Claude Sessions</h1>
-      <span class="version-badge">v0.7.0</span>
+      <span class="version-badge">v0.7.1</span>
       {#if onOpenBookmarks}
         <button class="update-check-btn" onclick={onOpenBookmarks} title="View bookmarks">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
