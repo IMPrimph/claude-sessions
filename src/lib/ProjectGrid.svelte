@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { getVersion } from "@tauri-apps/api/app";
   import type { ProjectInfo, GlobalSearchResult } from "./types";
   import { preferences, toggleDateFormat } from "./preferences.svelte";
   import { bookmarks } from "./bookmarks.svelte";
@@ -20,6 +21,13 @@
   } = $props();
 
   let bookmarkCount = $derived(bookmarks.length);
+
+  // Read the app version from tauri.conf.json (single source of truth) so the
+  // header badge never drifts from the actual build version.
+  let appVersion = $state("");
+  getVersion().then((version) => {
+    appVersion = version;
+  });
 
   function formatLastActive(project: ProjectInfo): string {
     if (preferences.dateFormat === "absolute") {
@@ -138,7 +146,7 @@
     <div class="title-row">
       <div class="brand-badge"><BrandMark size={30} /></div>
       <h1>Claude Sessions</h1>
-      <span class="version-badge">v0.7.1</span>
+      {#if appVersion}<span class="version-badge">v{appVersion}</span>{/if}
       {#if onOpenBookmarks}
         <button class="update-check-btn" onclick={onOpenBookmarks} title="View bookmarks">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
