@@ -21,6 +21,8 @@ export interface SessionInfo {
   conversation_count: number;
   total_tokens: number;
   git_branch: string | null;
+  // Parent session id when this session was forked/branched from another.
+  forked_from_session_id: string | null;
   jsonl_path: string;
 }
 
@@ -41,10 +43,34 @@ export interface MessageImage {
 }
 
 export interface ConversationMessage {
-  role: "user" | "assistant" | "compaction";
+  role: "user" | "assistant" | "compaction" | "agent-notification";
   text: string;
   timestamp: string;
   images?: MessageImage[];
+  // True on an assistant reply that was cut off mid-response by the user
+  // pressing Esc.
+  interrupted?: boolean;
+  // True on a user message sent *during* an interruption — i.e. a mid-turn
+  // steering message fired while Claude was still responding.
+  mid_turn?: boolean;
+  // Present only when role === "agent-notification": a background subagent /
+  // workflow agent finishing. Claude Code stores these as user entries, but the
+  // user didn't type them — they render as a distinct card, not a bubble.
+  notification?: AgentNotification;
+}
+
+// Parsed from a <task-notification> transcript entry. Covers single subagents,
+// dynamic workflows, and multi-agent fan-outs (they share the same wrapper).
+export interface AgentNotification {
+  summary: string;
+  status: string;
+  result?: string;
+  tokens?: number;
+  tool_uses?: number;
+  duration_ms?: number;
+  agent_count?: number;
+  agents_done?: number;
+  agents_error?: number;
 }
 
 export interface ToolCount {
@@ -81,6 +107,29 @@ export interface FileChange {
   edits: FileEditEntry[];
   edit_count: number;
   read_count: number;
+}
+
+export interface AnsweredOption {
+  label: string;
+  description: string;
+  chosen: boolean;
+  // True when the user picked "Other" and typed a custom answer (not an offered option).
+  custom: boolean;
+}
+
+export interface AnsweredQuestion {
+  question: string;
+  header: string;
+  multi_select: boolean;
+  options: AnsweredOption[];
+  // Free-text note the user attached (sometimes the note is the whole answer).
+  notes?: string | null;
+}
+
+export interface SessionArtifact {
+  url: string;
+  title: string;
+  path: string;
 }
 
 export interface Bookmark {

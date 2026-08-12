@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-  import type { ConversationMessage, SessionInfo, ToolResultPayload } from "./types";
+  import type { ConversationMessage, SessionInfo, ToolResultPayload, AnsweredQuestion, SessionArtifact } from "./types";
   import { prettyToolName } from "./format";
   import { copyToClipboard } from "./clipboard";
   import { isBookmarked, toggleBookmark, makeBookmarkId } from "./bookmarks.svelte";
@@ -12,6 +12,8 @@
     onImageOpen,
     onAgentOpen,
     toolResults,
+    questions,
+    artifacts,
     bookmarkSession = null,
   }: {
     message: ConversationMessage;
@@ -20,6 +22,10 @@
     onImageOpen?: (url: string, label: string) => void;
     onAgentOpen?: (agentId: string, description: string) => void;
     toolResults?: Record<string, ToolResultPayload>;
+    // AskUserQuestion Q&A keyed by tool_use_id — renders inline as the chosen answer.
+    questions?: Record<string, AnsweredQuestion[]>;
+    // Published Artifacts keyed by tool_use_id — renders a card with a copy-link button.
+    artifacts?: Record<string, SessionArtifact>;
     // When provided, a bookmark (star) button is shown on user/assistant messages.
     // Subagent transcripts pass nothing, so they aren't bookmarkable in v1.
     bookmarkSession?: SessionInfo | null;
@@ -27,6 +33,17 @@
 
   // Track which tool pills are expanded by tool_use_id (per-message state)
   let expandedTools = $state(new Set<string>());
+
+  // Copy-link state for artifact cards — tracks the last-copied url so the button
+  // can briefly show "Copied".
+  let copiedArtifactUrl = $state<string | null>(null);
+  async function copyArtifactLink(url: string) {
+    await copyToClipboard(url);
+    copiedArtifactUrl = url;
+    setTimeout(() => {
+      if (copiedArtifactUrl === url) copiedArtifactUrl = null;
+    }, 1500);
+  }
 
   function toggleToolResult(toolUseId: string) {
     const next = new Set(expandedTools);
@@ -269,6 +286,31 @@
       .replace(/>/g, "&gt;");
   }
 
+  // ── Agent-notification card helpers ──
+
+  // 122641 → "122.6k", 940 → "940"
+  function formatTokens(count: number): string {
+    if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
+    return String(count);
+  }
+
+  // 267945 → "4m 28s", 8200 → "8.2s"
+  function formatDuration(milliseconds: number): string {
+    const totalSeconds = Math.round(milliseconds / 1000);
+    if (totalSeconds < 60) return `${(milliseconds / 1000).toFixed(1)}s`;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}m ${seconds}s`;
+  }
+
+  // Strip the framing verbs Claude Code wraps around the agent name so the card
+  // header reads as the task itself: `Agent "Map domain model" finished` → `Map
+  // domain model`. Falls back to the raw summary when no quoted name is present.
+  function notificationTitle(summary: string): string {
+    const quoted = summary.match(/"([^"]+)"/);
+    return quoted ? quoted[1] : summary;
+  }
+
   // ── Markdown rendering ──
 
   function renderMarkdown(text: string): string {
@@ -446,6 +488,7 @@
 
   function toggleBookmarkForMessage() {
     if (!bookmarkSession || bookmarkId === "") return;
+    const wasBookmarked = bookmarked;
     const cleanText = buildCopyText();
     toggleBookmark({
       id: bookmarkId,
@@ -459,6 +502,24 @@
       timestamp: message.timestamp,
       created_at: Date.now(),
     });
+
+    // Adding a bookmark archives the whole session so it survives Claude Code's
+    // 30-day cleanup and the bookmark stays openable. Fire-and-forget.
+    if (!wasBookmarked) {
+      invoke("archive_session", {
+        jsonlPath: bookmarkSession.jsonl_path,
+        sessionId: bookmarkSession.session_id,
+        projectPath: bookmarkSession.project_path,
+        projectName: bookmarkSession.project_name,
+        title:
+          bookmarkSession.custom_title ||
+          bookmarkSession.summary ||
+          bookmarkSession.ai_title ||
+          null,
+      }).catch((archiveError) => {
+        console.error("Archive on bookmark failed:", archiveError);
+      });
+    }
   }
 </script>
 
@@ -477,8 +538,14 @@
     </details>
   </div>
 {:else if message.role === "user"}
-  <div class="user-row">
+  <div class="user-row" class:mid-turn={message.mid_turn}>
     <div class="user-meta">
+      {#if message.mid_turn}
+        <span class="interject-badge" title="Sent while Claude was still responding — you pressed Esc and typed this mid-turn">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>
+          interjected
+        </span>
+      {/if}
       <span class="timestamp">{formatTime(message.timestamp)}</span>
       <span class="role-tag">You</span>
     </div>
@@ -539,6 +606,41 @@
       </button>
     </div>
   </div>
+{:else if message.role === "agent-notification" && message.notification}
+  {@const note = message.notification}
+  <!-- A background subagent / workflow agent finished. Not a user message. -->
+  <div class="notification-row">
+    <div class="notification-card">
+      <div class="notification-head">
+        <span class="notification-icon" title="A background agent Claude ran finished — this is a system event, not a message you sent">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
+        </span>
+        <span class="notification-title">{notificationTitle(note.summary)}</span>
+        <span class="notification-status" class:is-error={note.status !== "completed"}>{note.status}</span>
+        <span class="timestamp">{formatTime(message.timestamp)}</span>
+      </div>
+      <div class="notification-meta">
+        <span class="notification-kind">agent finished</span>
+        {#if note.tokens != null}<span class="notification-stat">{formatTokens(note.tokens)} tok</span>{/if}
+        {#if note.tool_uses != null}<span class="notification-stat">{note.tool_uses} tools</span>{/if}
+        {#if note.duration_ms != null}<span class="notification-stat">{formatDuration(note.duration_ms)}</span>{/if}
+        {#if note.agent_count != null}<span class="notification-stat">{note.agents_done ?? note.agent_count}/{note.agent_count} agents</span>{/if}
+        {#if note.agents_error}<span class="notification-stat is-error">{note.agents_error} failed</span>{/if}
+      </div>
+      {#if note.result}
+        <details class="notification-details">
+          <summary>Show result</summary>
+          <div class="notification-result">
+            {#if searchQuery}
+              {@html highlightSearch(escapeHtml(note.result), searchQuery)}
+            {:else}
+              {note.result}
+            {/if}
+          </div>
+        </details>
+      {/if}
+    </div>
+  </div>
 {:else}
   <!-- Assistant message: structured segments -->
   <div class="assistant-row">
@@ -558,7 +660,72 @@
         {:else if segment.kind === "tool"}
           {@const toolResult = segment.toolUseId ? toolResults?.[segment.toolUseId] : undefined}
           {@const isExpanded = segment.toolUseId ? expandedTools.has(segment.toolUseId) : false}
-          {#if segment.agentId && onAgentOpen}
+          {@const questionBlock = segment.name === "AskUserQuestion" && segment.toolUseId ? questions?.[segment.toolUseId] : undefined}
+          {@const artifact = segment.name === "Artifact" && segment.toolUseId ? artifacts?.[segment.toolUseId] : undefined}
+          {#if artifact}
+            <div class="artifact-block">
+              <svg class="artifact-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M10 13l2 2 4-4"/></svg>
+              <div class="artifact-body">
+                <div class="artifact-label">Published artifact</div>
+                <div class="artifact-title">{artifact.title || "Untitled artifact"}</div>
+                <div class="artifact-url">{artifact.url}</div>
+              </div>
+              <button
+                class="artifact-copy"
+                class:artifact-copied={copiedArtifactUrl === artifact.url}
+                onclick={() => copyArtifactLink(artifact.url)}
+                title="Copy artifact link"
+              >
+                {#if copiedArtifactUrl === artifact.url}
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+                  Copied
+                {:else}
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                  Copy link
+                {/if}
+              </button>
+            </div>
+          {:else if questionBlock && questionBlock.length > 0}
+            <div class="question-block">
+              {#each questionBlock as qa}
+                <div class="question-item">
+                  <div class="question-head">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="10"/></svg>
+                    <span class="question-tool">Asked you</span>
+                    {#if qa.header}<span class="question-header-tag">{qa.header}</span>{/if}
+                    {#if qa.multi_select}<span class="question-multi-tag">multi-select</span>{/if}
+                  </div>
+                  <div class="question-text">{qa.question}</div>
+                  <div class="question-options">
+                    {#each qa.options as option}
+                      <div class="question-option" class:chosen={option.chosen}>
+                        <span class="option-mark">
+                          {#if option.chosen}
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+                          {/if}
+                        </span>
+                        <div class="option-body">
+                          <span class="option-label">
+                            {option.label}
+                            {#if option.custom}<span class="custom-tag">your answer</span>{/if}
+                          </span>
+                          {#if option.description}
+                            <span class="option-desc">{option.description}</span>
+                          {/if}
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                  {#if qa.notes}
+                    <div class="question-note">
+                      <span class="question-note-label">Your note</span>
+                      <span class="question-note-text">{qa.notes}</span>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {:else if segment.agentId && onAgentOpen}
             <button
               type="button"
               class="tool-pill tool-pill-clickable"
@@ -636,6 +803,12 @@
           </details>
         {/if}
       {/each}
+      {#if message.interrupted}
+        <div class="interrupted-tag" title="The user pressed Esc — this reply was cut off mid-response">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M4.9 4.9l14.2 14.2"/></svg>
+          interrupted by user
+        </div>
+      {/if}
     </div>
     <div class="assistant-actions">
       {#if bookmarkSession}
@@ -663,7 +836,7 @@
 
   :global(mark.search-mark) {
     background: #f59e0b;
-    color: #12121e;
+    color: var(--bg-app);
     padding: 1px 2px;
     border-radius: 2px;
   }
@@ -672,10 +845,10 @@
 
   .compaction-row {
     margin: 28px 0;
-    border: 1px dashed #3a3a5a;
+    border: 1px dashed var(--border-strong);
     border-radius: 8px;
     padding: 12px 16px;
-    background: #1a1a2e;
+    background: var(--bg-sidebar);
   }
 
   .compaction-header {
@@ -692,7 +865,7 @@
 
   .compaction-header .timestamp {
     font-size: 11px;
-    color: #5a5a7a;
+    color: var(--text-faint);
     margin-left: auto;
   }
 
@@ -702,21 +875,21 @@
 
   .compaction-details summary {
     font-size: 12px;
-    color: #7a7a9a;
+    color: var(--text-muted);
     cursor: pointer;
     user-select: none;
   }
 
   .compaction-details summary:hover {
-    color: #a0a0c0;
+    color: var(--text-secondary);
   }
 
   .compaction-content {
     margin-top: 12px;
     padding: 12px 16px;
-    background: #12121e;
+    background: var(--bg-app);
     border-radius: 6px;
-    color: #b0b0c8;
+    color: var(--text-secondary);
     font-size: 13px;
     line-height: 1.6;
     max-height: 400px;
@@ -725,6 +898,125 @@
 
   .compaction-content :global(p) { margin: 0 0 8px 0; }
   .compaction-content :global(p:last-child) { margin-bottom: 0; }
+
+  /* ── Agent-notification card (background subagent / workflow finished) ── */
+
+  .notification-row {
+    margin: 18px 0;
+  }
+
+  .notification-card {
+    border: 1px solid var(--border-strong);
+    border-left: 3px solid #818cf8;
+    border-radius: 8px;
+    padding: 10px 14px;
+    background: var(--bg-sidebar);
+  }
+
+  .notification-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .notification-icon {
+    display: inline-flex;
+    color: #818cf8;
+    flex-shrink: 0;
+  }
+
+  .notification-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .notification-status {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: #34d399;
+    background: color-mix(in srgb, #34d399 16%, transparent);
+    flex-shrink: 0;
+  }
+
+  .notification-status.is-error {
+    color: #f87171;
+    background: color-mix(in srgb, #f87171 16%, transparent);
+  }
+
+  .notification-head .timestamp {
+    font-size: 11px;
+    color: var(--text-faint);
+    flex-shrink: 0;
+  }
+
+  .notification-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 7px;
+  }
+
+  .notification-kind {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #818cf8;
+    font-weight: 600;
+  }
+
+  .notification-stat {
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: var(--bg-app);
+    border: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .notification-stat.is-error {
+    color: #f87171;
+  }
+
+  .notification-details {
+    margin-top: 9px;
+  }
+
+  .notification-details summary {
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .notification-details summary:hover {
+    color: var(--text-secondary);
+  }
+
+  .notification-result {
+    margin-top: 10px;
+    padding: 12px 14px;
+    background: var(--bg-app);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 420px;
+    overflow-y: auto;
+  }
 
   /* ── User messages ── */
 
@@ -742,26 +1034,309 @@
     margin-bottom: 6px;
   }
 
-  .user-meta .timestamp { font-size: 11px; color: #5a5a7a; }
+  .user-meta .timestamp { font-size: 11px; color: var(--text-faint); }
 
   .role-tag {
     font-size: 11px;
     font-weight: 600;
-    color: #818cf8;
+    color: var(--accent-hover);
   }
 
   .user-bubble {
-    background: #1e293b;
+    background: var(--bubble-user);
     border-radius: 12px 12px 4px 12px;
     padding: 10px 16px;
     max-width: 70%;
-    color: #d0d0e8;
+    color: var(--text-primary);
     font-size: 14px;
     line-height: 1.5;
     position: relative;
     overflow-wrap: anywhere;
     word-break: break-word;
     white-space: pre-wrap;
+  }
+
+  /* Mid-turn interjection: a message the user fired while Claude was still
+     responding (they pressed Esc and typed). Amber accent distinguishes it
+     from the indigo of an ordinary turn. */
+  .user-row.mid-turn .user-bubble {
+    border-right: 2px solid rgba(245, 158, 11, 0.55);
+    border-radius: 12px 4px 4px 12px;
+    background: var(--interject-bg);
+  }
+
+  .interject-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: #fbbf24;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: 999px;
+    padding: 2px 7px 2px 6px;
+  }
+
+  .interject-badge svg { flex-shrink: 0; }
+
+  /* End-of-reply marker on an assistant turn that was cut off by the user. */
+  .interrupted-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    color: #d99a4e;
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px dashed rgba(245, 158, 11, 0.35);
+    border-radius: 6px;
+    padding: 3px 9px;
+  }
+
+  .interrupted-tag svg { flex-shrink: 0; opacity: 0.85; }
+
+  /* AskUserQuestion: the question Claude asked and the option you picked. */
+  .question-block {
+    margin: 4px 0;
+    border: 1px solid var(--border);
+    border-left: 3px solid rgba(245, 158, 11, 0.6);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    padding: 12px 14px;
+  }
+
+  .question-item + .question-item {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+
+  .question-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 7px;
+  }
+
+  .question-head svg { color: #fbbf24; flex-shrink: 0; }
+
+  .question-tool {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #fbbf24;
+  }
+
+  .question-header-tag {
+    font-size: 10px;
+    font-weight: 600;
+    color: #c9a35b;
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    border-radius: 999px;
+    padding: 1px 8px;
+  }
+
+  .question-multi-tag {
+    font-size: 9.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 1px 7px;
+  }
+
+  .question-note {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 9px;
+    padding: 8px 11px;
+    border-left: 2px solid rgba(245, 158, 11, 0.5);
+    background: var(--interject-bg);
+    border-radius: 0 6px 6px 0;
+  }
+
+  .question-note-label {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #d99a4e;
+  }
+
+  .question-note-text {
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* Published-artifact card (replaces the generic Artifact pill). */
+  .artifact-block {
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+    margin: 4px 0;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    background: var(--bg-panel);
+  }
+
+  .artifact-icon { color: var(--accent-hover); flex-shrink: 0; margin-top: 1px; }
+
+  .artifact-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .artifact-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--accent-text);
+  }
+
+  .artifact-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+
+  .artifact-url {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    font-family: "SF Mono", "Fira Code", monospace;
+    word-break: break-all;
+  }
+
+  .artifact-copy {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .artifact-copy:hover {
+    color: var(--text-primary);
+    border-color: var(--accent);
+  }
+
+  .artifact-copy.artifact-copied {
+    color: #34d399;
+    border-color: #34d399;
+  }
+
+  .question-text {
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+    overflow-wrap: anywhere;
+  }
+
+  .question-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .question-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--bg-elevated);
+    background: var(--bg-sidebar);
+    /* Unchosen options recede so the picked answer stands out. */
+    opacity: 0.55;
+    transition: opacity 0.15s;
+  }
+
+  .question-option.chosen {
+    opacity: 1;
+    border-color: rgba(245, 158, 11, 0.5);
+    background: rgba(245, 158, 11, 0.09);
+  }
+
+  .option-mark {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    margin-top: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+  }
+
+  .question-option.chosen .option-mark { color: #fbbf24; }
+
+  .question-option:not(.chosen) .option-mark {
+    border: 1.5px solid var(--border-strong);
+    box-sizing: border-box;
+  }
+
+  .option-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .option-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+
+  .question-option.chosen .option-label { color: #f4d58d; }
+
+  .custom-tag {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #fbbf24;
+    background: rgba(245, 158, 11, 0.14);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
+
+  .option-desc {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
   }
 
   .user-bubble p {
@@ -784,7 +1359,7 @@
   }
 
   .user-image-link:hover {
-    border-color: #6366f1;
+    border-color: var(--accent);
     transform: scale(1.02);
   }
 
@@ -805,10 +1380,10 @@
     border: 1px dashed rgba(255, 255, 255, 0.12);
     border-radius: 6px;
     font-size: 11px;
-    color: #8a8aaa;
+    color: var(--text-muted);
   }
 
-  .image-missing svg { color: #6a6a8a; }
+  .image-missing svg { color: var(--text-faint); }
 
   .user-actions {
     display: flex;
@@ -839,7 +1414,7 @@
   .copy-btn {
     background: transparent;
     border: none;
-    color: #6a6a8a;
+    color: var(--text-faint);
     width: 28px;
     height: 28px;
     border-radius: 6px;
@@ -850,7 +1425,7 @@
     transition: color 0.15s, background 0.15s;
   }
 
-  .copy-btn:hover { background: rgba(255, 255, 255, 0.06); color: #c0c0d8; }
+  .copy-btn:hover { background: rgba(255, 255, 255, 0.06); color: var(--text-secondary); }
   .copy-btn.copied { color: #34d399; }
   .bookmark-btn:hover { color: #fbbf24; }
   .bookmark-btn.bookmarked { color: #f59e0b; }
@@ -882,16 +1457,16 @@
   }
 
   .claude-label { font-size: 13px; font-weight: 600; color: #34d399; }
-  .assistant-header .timestamp { font-size: 11px; color: #5a5a7a; }
+  .assistant-header .timestamp { font-size: 11px; color: var(--text-faint); }
 
   .assistant-content {
-    background: #16162a;
+    background: var(--bg-panel);
     border-radius: 12px;
     padding: 16px 20px;
-    color: #d0d0e8;
+    color: var(--text-primary);
     font-size: 14px;
     line-height: 1.7;
-    border: 1px solid #1e1e36;
+    border: 1px solid var(--bg-elevated);
   }
 
   /* ── Segment: text ── */
@@ -955,12 +1530,12 @@
   }
 
   .tool-chevron {
-    color: #6a6a8a;
+    color: var(--text-faint);
     flex-shrink: 0;
   }
 
   .tool-pill-clickable:hover .tool-chevron {
-    color: #a5b4fc;
+    color: var(--accent-bright);
   }
 
   .tool-chevron-toggle {
@@ -974,10 +1549,10 @@
   .tool-result-panel {
     margin: 0 0 8px 0;
     padding: 10px 14px;
-    background: #0d0d18;
-    border: 1px solid #1e1e36;
+    background: var(--bg-app);
+    border: 1px solid var(--bg-elevated);
     border-radius: 8px;
-    border-left: 3px solid var(--tool-color, #6366f1);
+    border-left: 3px solid var(--tool-color, var(--accent));
   }
 
   .tool-result-panel.tool-result-error {
@@ -989,7 +1564,7 @@
     margin: 0;
     font-family: "SF Mono", "Fira Code", monospace;
     font-size: 12px;
-    color: #b0b0c8;
+    color: var(--text-secondary);
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
@@ -1005,16 +1580,16 @@
   .tool-result-actions {
     margin-top: 10px;
     padding-top: 10px;
-    border-top: 1px solid #1e1e36;
+    border-top: 1px solid var(--bg-elevated);
     display: flex;
     align-items: center;
     gap: 10px;
   }
 
   .tool-load-btn {
-    background: #1e1e36;
-    border: 1px solid #2a2a4a;
-    color: #a5b4fc;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--accent-bright);
     font-size: 11px;
     font-weight: 500;
     padding: 5px 12px;
@@ -1024,13 +1599,13 @@
   }
 
   .tool-load-btn:hover {
-    background: #2a2a4a;
-    border-color: #3a3a5a;
+    background: var(--border);
+    border-color: var(--border-strong);
   }
 
   .loading-text {
     font-size: 11px;
-    color: #7a7a9a;
+    color: var(--text-muted);
   }
 
   .error-text {
@@ -1040,14 +1615,14 @@
 
   .persisted-block summary {
     font-size: 11px;
-    color: #a0a0c0;
+    color: var(--text-secondary);
     cursor: pointer;
     user-select: none;
     padding: 2px 0;
   }
 
   .persisted-block summary:hover {
-    color: #c0c0d8;
+    color: var(--text-secondary);
   }
 
   .tool-result-content::-webkit-scrollbar {
@@ -1055,7 +1630,7 @@
   }
 
   .tool-result-content::-webkit-scrollbar-thumb {
-    background: #2a2a4a;
+    background: var(--border);
     border-radius: 3px;
   }
 
@@ -1071,7 +1646,7 @@
   }
 
   .tool-summary {
-    color: #8a8aaa;
+    color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1083,9 +1658,9 @@
 
   .thinking-block {
     margin: 8px 0;
-    border: 1px solid #2a2a4a;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #12121e;
+    background: var(--bg-app);
   }
 
   .thinking-block summary {
@@ -1095,26 +1670,26 @@
     padding: 8px 12px;
     font-size: 12px;
     font-weight: 500;
-    color: #7a7a9a;
+    color: var(--text-muted);
     cursor: pointer;
     user-select: none;
   }
 
-  .thinking-block summary:hover { color: #a0a0c0; }
+  .thinking-block summary:hover { color: var(--text-secondary); }
 
   .thinking-block summary svg {
-    color: #6366f1;
+    color: var(--accent);
     flex-shrink: 0;
   }
 
   .thinking-content {
     padding: 0 12px 12px;
     font-size: 13px;
-    color: #9a9ab8;
+    color: var(--text-secondary);
     line-height: 1.6;
     max-height: 400px;
     overflow-y: auto;
-    border-top: 1px solid #2a2a4a;
+    border-top: 1px solid var(--border);
     padding-top: 10px;
   }
 
@@ -1127,7 +1702,7 @@
     margin: 10px 0;
     border-radius: 8px;
     overflow: hidden;
-    border: 1px solid #1e1e36;
+    border: 1px solid var(--bg-elevated);
   }
 
   .assistant-content :global(.code-block-header) {
@@ -1135,22 +1710,22 @@
     align-items: center;
     justify-content: space-between;
     padding: 6px 12px;
-    background: #1a1a2e;
-    border-bottom: 1px solid #1e1e36;
+    background: var(--code-header-bg);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.35);
   }
 
   .assistant-content :global(.code-lang) {
     font-size: 11px;
-    color: #5a5a7a;
+    color: var(--code-muted);
     font-family: "SF Mono", "Fira Code", monospace;
     text-transform: lowercase;
   }
 
   .assistant-content :global(.code-copy-btn) {
     font-size: 11px;
-    color: #5a5a7a;
+    color: var(--code-muted);
     background: transparent;
-    border: 1px solid #2a2a4a;
+    border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 4px;
     padding: 2px 8px;
     cursor: pointer;
@@ -1159,8 +1734,8 @@
   }
 
   .assistant-content :global(.code-copy-btn:hover) {
-    color: #c0c0d8;
-    border-color: #4a4a6a;
+    color: var(--code-text);
+    border-color: rgba(255, 255, 255, 0.3);
     background: rgba(255, 255, 255, 0.05);
   }
 
@@ -1170,13 +1745,15 @@
     border-radius: 0;
   }
 
+  /* Code blocks stay dark in every theme (syntax pastels need a dark ground). */
   .assistant-content :global(pre) {
-    background: #0d0d18;
+    background: var(--code-bg);
+    color: var(--code-text);
     border-radius: 8px;
     padding: 14px 16px;
     overflow-x: auto;
     margin: 10px 0;
-    border: 1px solid #1e1e36;
+    border: 1px solid var(--border);
   }
 
   .assistant-content :global(code) {
@@ -1184,12 +1761,13 @@
     font-size: 13px;
   }
 
+  /* Inline code = a small dark chip in every theme, matching the code blocks. */
   .assistant-content :global(:not(pre) > code) {
-    background: #2a2a4a;
+    background: var(--code-bg);
     padding: 2px 7px;
     border-radius: 4px;
     font-size: 13px;
-    color: #e0b0ff;
+    color: #d3b3f5;
   }
 
   /* ── Syntax highlighting ── */
@@ -1202,12 +1780,12 @@
 
   .assistant-content :global(h1),
   .assistant-content :global(h2),
-  .assistant-content :global(h3) { color: #e0e0f0; margin: 16px 0 8px 0; }
+  .assistant-content :global(h3) { color: var(--text-primary); margin: 16px 0 8px 0; }
 
   .assistant-content :global(h1) { font-size: 18px; }
   .assistant-content :global(h2) { font-size: 16px; }
   .assistant-content :global(h3) { font-size: 15px; }
-  .assistant-content :global(strong) { color: #e0e0f0; }
+  .assistant-content :global(strong) { color: var(--text-primary); }
   .assistant-content :global(ul) { margin: 6px 0; padding-left: 22px; }
   .assistant-content :global(li) { margin: 4px 0; }
 
@@ -1220,12 +1798,12 @@
 
   .assistant-content :global(th),
   .assistant-content :global(td) {
-    border: 1px solid #2a2a4a;
+    border: 1px solid var(--border);
     padding: 8px 12px;
     text-align: left;
   }
 
-  .assistant-content :global(th) { background: #1e1e36; color: #e0e0f0; font-weight: 600; }
-  .assistant-content :global(td) { background: #12121e; }
-  .assistant-content :global(hr) { border: none; border-top: 1px solid #2a2a4a; margin: 14px 0; }
+  .assistant-content :global(th) { background: var(--bg-elevated); color: var(--text-primary); font-weight: 600; }
+  .assistant-content :global(td) { background: var(--bg-app); }
+  .assistant-content :global(hr) { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 </style>

@@ -8,6 +8,8 @@
     SessionStats,
     SubagentInfo,
     ToolResultPayload,
+    AnsweredQuestion,
+    SessionArtifact,
   } from "./types";
   import { prettyToolName, formatTokenCompact, formatModel } from "./format";
   import { preferences, type SearchScope } from "./preferences.svelte";
@@ -20,6 +22,11 @@
     messages,
     loading,
     scrollToTimestamp = null,
+    forkParent = null,
+    onOpenParent,
+    saved = false,
+    saveLocked = false,
+    onToggleSave,
   }: {
     session: SessionInfo | null;
     messages: ConversationMessage[];
@@ -27,6 +34,14 @@
     // When set (e.g. arriving from a bookmark), scroll to the message with this
     // timestamp and briefly highlight it.
     scrollToTimestamp?: string | null;
+    // The parent session this one was forked from, if any (resolved by App).
+    forkParent?: SessionInfo | null;
+    onOpenParent?: () => void;
+    // Whether this session has a local archived copy, and whether that copy is
+    // pinned by an existing bookmark (so it can't be un-saved from here).
+    saved?: boolean;
+    saveLocked?: boolean;
+    onToggleSave?: () => void;
   } = $props();
 
   let stats: SessionStats | null = $state(null);
@@ -68,6 +83,54 @@
       })
       .catch(() => {
         if (myGeneration === toolResultsLoaderGeneration) toolResults = {};
+      });
+  });
+
+  // AskUserQuestion Q&A, keyed by the asking tool's tool_use_id. Loaded in the
+  // background like tool results; MessageBubble renders it inline under the pill.
+  let sessionQuestions: Record<string, AnsweredQuestion[]> = $state({});
+  let questionsLoaderGeneration = 0;
+
+  $effect(() => {
+    const currentSession = session;
+    if (!currentSession) {
+      sessionQuestions = {};
+      return;
+    }
+    questionsLoaderGeneration += 1;
+    const myGeneration = questionsLoaderGeneration;
+    invoke<Record<string, AnsweredQuestion[]>>("get_session_questions", {
+      jsonlPath: currentSession.jsonl_path,
+    })
+      .then((result) => {
+        if (myGeneration === questionsLoaderGeneration) sessionQuestions = result;
+      })
+      .catch(() => {
+        if (myGeneration === questionsLoaderGeneration) sessionQuestions = {};
+      });
+  });
+
+  // Published Artifacts, keyed by the Artifact tool's tool_use_id. Rendered as a
+  // clickable card (title + copy-link) in place of the generic tool pill.
+  let sessionArtifacts: Record<string, SessionArtifact> = $state({});
+  let artifactsLoaderGeneration = 0;
+
+  $effect(() => {
+    const currentSession = session;
+    if (!currentSession) {
+      sessionArtifacts = {};
+      return;
+    }
+    artifactsLoaderGeneration += 1;
+    const myGeneration = artifactsLoaderGeneration;
+    invoke<Record<string, SessionArtifact>>("get_session_artifacts", {
+      jsonlPath: currentSession.jsonl_path,
+    })
+      .then((result) => {
+        if (myGeneration === artifactsLoaderGeneration) sessionArtifacts = result;
+      })
+      .catch(() => {
+        if (myGeneration === artifactsLoaderGeneration) sessionArtifacts = {};
       });
   });
 
@@ -464,6 +527,24 @@
         <div class="session-title">{cleanTitle(session)}</div>
         <div class="session-actions">
           <button
+            class="header-action-btn save-btn"
+            class:save-btn-saved={saved}
+            onclick={() => onToggleSave?.()}
+            title={saved
+              ? saveLocked
+                ? "Saved to your machine — kept because you have bookmarks in this session"
+                : "Saved to your machine — click to remove from your archive"
+              : "Save this session so it survives Claude Code's 30-day auto-delete"}
+          >
+            {#if saved}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+              Saved
+            {:else}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+              Save
+            {/if}
+          </button>
+          <button
             class="header-action-btn"
             class:active={showFilesPanel}
             onclick={toggleFilesPanel}
@@ -501,6 +582,24 @@
           </button>
         </div>
       </div>
+      {#if session.forked_from_session_id}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="fork-line"
+          class:fork-line-linked={forkParent && onOpenParent}
+          title={forkParent
+            ? `Forked from "${cleanTitle(forkParent)}" — click to open it`
+            : "Forked from another session (parent not in this project)"}
+          onclick={() => {
+            if (forkParent && onOpenParent) onOpenParent();
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+          <span class="fork-line-label">forked from</span>
+          <span class="fork-line-parent">{forkParent ? cleanTitle(forkParent) : "another session"}</span>
+        </div>
+      {/if}
       <div class="session-info">
         <span>{session.project_name}</span>
         {#if session.git_branch}
@@ -663,6 +762,8 @@
                 onImageOpen={openLightbox}
                 onAgentOpen={handleAgentOpen}
                 {toolResults}
+                questions={sessionQuestions}
+                artifacts={sessionArtifacts}
                 bookmarkSession={session}
               />
             </div>
@@ -725,7 +826,7 @@
     display: flex;
     flex-direction: row;
     height: 100%;
-    background: #12121e;
+    background: var(--bg-app);
     overflow: hidden;
   }
 
@@ -745,7 +846,7 @@
     justify-content: center;
     height: 100%;
     flex: 1;
-    color: #5a5a7a;
+    color: var(--text-faint);
     gap: 16px;
   }
 
@@ -760,8 +861,8 @@
 
   .session-header {
     padding: 16px 24px;
-    border-bottom: 1px solid #2a2a4a;
-    background: #16162a;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
     flex-shrink: 0;
   }
 
@@ -776,7 +877,7 @@
   .session-title {
     font-size: 16px;
     font-weight: 600;
-    color: #e0e0f0;
+    color: var(--text-primary);
     line-height: 1.4;
     flex: 1;
     min-width: 0;
@@ -793,9 +894,9 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    background: #1e1e36;
-    border: 1px solid #2a2a4a;
-    color: #a0a0c0;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
     font-size: 11px;
     font-weight: 500;
     padding: 5px 9px;
@@ -805,20 +906,34 @@
   }
 
   .header-action-btn:hover:not(:disabled) {
-    background: #2a2a4a;
-    color: #e0e0f0;
-    border-color: #3a3a5a;
+    background: var(--border);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
   }
 
   .header-action-btn.active {
     background: rgba(99, 102, 241, 0.15);
-    color: #a5b4fc;
+    color: var(--accent-bright);
     border-color: rgba(99, 102, 241, 0.4);
+  }
+
+  /* Saved state = amber (matches the "keep this" language), distinct from the
+     indigo panel-toggle "active" state. */
+  .save-btn-saved {
+    background: rgba(245, 158, 11, 0.12);
+    color: #f4bf5f;
+    border-color: rgba(245, 158, 11, 0.4);
+  }
+
+  .save-btn-saved:hover:not(:disabled) {
+    background: rgba(245, 158, 11, 0.18);
+    color: #fbbf24;
+    border-color: rgba(245, 158, 11, 0.55);
   }
 
   .header-action-count {
     background: rgba(99, 102, 241, 0.18);
-    color: #a5b4fc;
+    color: var(--accent-bright);
     font-size: 10px;
     font-weight: 600;
     padding: 1px 6px;
@@ -834,15 +949,15 @@
   }
 
   .model-badge {
-    color: #a5b4fc;
+    color: var(--accent-bright);
     font-weight: 500;
   }
 
   .stats-panel {
     margin-top: 14px;
     padding: 14px 16px;
-    background: #12121e;
-    border: 1px solid #2a2a4a;
+    background: var(--bg-app);
+    border: 1px solid var(--border);
     border-radius: 8px;
   }
 
@@ -860,7 +975,7 @@
 
   .stat-label {
     font-size: 10px;
-    color: #5a5a7a;
+    color: var(--text-faint);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-weight: 600;
@@ -869,19 +984,19 @@
   .stat-value {
     font-size: 16px;
     font-weight: 600;
-    color: #e0e0f0;
+    color: var(--text-primary);
     font-variant-numeric: tabular-nums;
   }
 
   .tool-breakdown {
     margin-top: 14px;
     padding-top: 12px;
-    border-top: 1px solid #2a2a4a;
+    border-top: 1px solid var(--border);
   }
 
   .stats-section-label {
     font-size: 10px;
-    color: #5a5a7a;
+    color: var(--text-faint);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-weight: 600;
@@ -899,31 +1014,31 @@
     align-items: center;
     gap: 6px;
     padding: 3px 8px;
-    background: #1a1a2e;
-    border: 1px solid #2a2a4a;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border);
     border-radius: 12px;
     font-size: 11px;
   }
 
   .tool-chip-name {
-    color: #c0c0d8;
+    color: var(--text-secondary);
     font-family: "SF Mono", "Fira Code", monospace;
   }
 
   .tool-chip-count {
-    color: #6366f1;
+    color: var(--accent);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
 
   .tool-chip.more {
-    color: #5a5a7a;
+    color: var(--text-faint);
     font-style: italic;
   }
 
   .session-info {
     font-size: 12px;
-    color: #7a7a9a;
+    color: var(--text-muted);
     display: flex;
     align-items: center;
     gap: 4px;
@@ -931,17 +1046,49 @@
   }
 
   .separator {
-    color: #3a3a5a;
+    color: var(--border-strong);
     margin: 0 2px;
   }
 
+  /* Subtle "forked from …" line under the title — no filled box. */
+  .fork-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: fit-content;
+    margin: 7px 0 2px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+  }
+
+  .fork-line svg { flex-shrink: 0; opacity: 0.65; }
+
+  .fork-line-label { flex-shrink: 0; }
+
+  .fork-line-parent {
+    font-weight: 600;
+    color: var(--accent-hover);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 420px;
+  }
+
+  .fork-line-linked {
+    cursor: pointer;
+  }
+
+  .fork-line-linked:hover .fork-line-parent {
+    text-decoration: underline;
+  }
+
   .time-arrow {
-    color: #5a5a7a;
+    color: var(--text-faint);
     margin: 0 2px;
   }
 
   .duration-badge {
-    color: #6366f1;
+    color: var(--accent);
     font-weight: 500;
   }
 
@@ -950,17 +1097,17 @@
     align-items: center;
     gap: 8px;
     padding: 8px 24px;
-    border-bottom: 1px solid #2a2a4a;
-    background: #16162a;
-    color: #5a5a7a;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
+    color: var(--text-faint);
     flex-shrink: 0;
   }
 
   .message-search-bar input {
     flex: 1;
-    background: #12121e;
-    border: 1px solid #2a2a4a;
-    color: #e0e0e0;
+    background: var(--bg-app);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
     padding: 6px 10px;
     border-radius: 5px;
     font-size: 13px;
@@ -968,18 +1115,18 @@
   }
 
   .message-search-bar input:focus {
-    border-color: #6366f1;
+    border-color: var(--accent);
   }
 
   .message-search-bar input::placeholder {
-    color: #5a5a7a;
+    color: var(--text-faint);
   }
 
   .scope-toggle {
     display: inline-flex;
     align-items: center;
-    background: #12121e;
-    border: 1px solid #2a2a4a;
+    background: var(--bg-app);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 2px;
     gap: 1px;
@@ -988,7 +1135,7 @@
   .scope-chip {
     background: transparent;
     border: none;
-    color: #7a7a9a;
+    color: var(--text-muted);
     font-size: 11px;
     font-weight: 500;
     padding: 3px 9px;
@@ -998,24 +1145,24 @@
   }
 
   .scope-chip:hover {
-    color: #c0c0d8;
+    color: var(--text-secondary);
   }
 
   .scope-chip.scope-active {
     background: rgba(99, 102, 241, 0.18);
-    color: #c7d2fe;
+    color: var(--accent-text);
   }
 
   .match-count {
     font-size: 11px;
-    color: #7a7a9a;
+    color: var(--text-muted);
     white-space: nowrap;
   }
 
   .nav-btn {
-    background: #2a2a4a;
+    background: var(--border);
     border: none;
-    color: #a0a0c0;
+    color: var(--text-secondary);
     width: 24px;
     height: 24px;
     border-radius: 4px;
@@ -1026,12 +1173,12 @@
   }
 
   .nav-btn:hover {
-    background: #3a3a5a;
-    color: #e0e0e0;
+    background: var(--border-strong);
+    color: var(--text-primary);
   }
 
   .search-highlight {
-    border-left: 2px solid #6366f1;
+    border-left: 2px solid var(--accent);
     border-radius: 4px;
   }
 
@@ -1070,9 +1217,9 @@
     width: 36px;
     height: 36px;
     border-radius: 50%;
-    background: #1e1e36;
-    border: 1px solid #2a2a4a;
-    color: #a0a0c0;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -1083,9 +1230,9 @@
   }
 
   .scroll-fab:hover {
-    background: #2a2a4a;
-    color: #e0e0f0;
-    border-color: #6366f1;
+    background: var(--border);
+    color: var(--text-primary);
+    border-color: var(--accent);
   }
 
   .scroll-fab-top {
@@ -1135,7 +1282,7 @@
     border-radius: 50%;
     background: rgba(255, 255, 255, 0.08);
     border: 1px solid rgba(255, 255, 255, 0.12);
-    color: #e0e0f0;
+    color: var(--text-primary);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -1153,7 +1300,7 @@
     top: 24px;
     left: 24px;
     font-size: 13px;
-    color: #c0c0d8;
+    color: var(--text-secondary);
     background: rgba(0, 0, 0, 0.5);
     padding: 6px 12px;
     border-radius: 6px;
@@ -1166,7 +1313,7 @@
     align-items: center;
     justify-content: center;
     height: 200px;
-    color: #5a5a7a;
+    color: var(--text-faint);
     font-size: 14px;
   }
 
@@ -1179,7 +1326,7 @@
   }
 
   .messages-container::-webkit-scrollbar-thumb {
-    background: #2a2a4a;
+    background: var(--border);
     border-radius: 4px;
   }
 </style>

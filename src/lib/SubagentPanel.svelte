@@ -100,8 +100,8 @@
     height: 100%;
     width: 540px;
     min-width: 380px;
-    background: #0e0e1a;
-    border-left: 1px solid #2a2a4a;
+    background: var(--bg-app);
+    border-left: 1px solid var(--border);
     flex-shrink: 0;
   }
 
@@ -110,8 +110,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 14px 18px;
-    border-bottom: 1px solid #2a2a4a;
-    background: #16162a;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
     flex-shrink: 0;
   }
 
@@ -124,7 +124,7 @@
   .subagent-tag {
     font-size: 10px;
     font-weight: 700;
-    color: #818cf8;
+    color: var(--accent-hover);
     background: rgba(99, 102, 241, 0.12);
     border: 1px solid rgba(99, 102, 241, 0.28);
     padding: 2px 8px;
@@ -135,13 +135,13 @@
   .subagent-type {
     font-size: 13px;
     font-weight: 600;
-    color: #c0c0d8;
+    color: var(--text-secondary);
   }
 
   .subagent-close {
-    background: #2a2a4a;
+    background: var(--border);
     border: none;
-    color: #a0a0c0;
+    color: var(--text-secondary);
     width: 28px;
     height: 28px;
     border-radius: 6px;
@@ -153,17 +153,17 @@
   }
 
   .subagent-close:hover {
-    background: #3a3a5a;
-    color: #e0e0e0;
+    background: var(--border-strong);
+    color: var(--text-primary);
   }
 
   .subagent-description {
     padding: 10px 18px;
     font-size: 12px;
-    color: #9090b0;
+    color: var(--text-muted);
     line-height: 1.5;
-    border-bottom: 1px solid #1e1e36;
-    background: #12121e;
+    border-bottom: 1px solid var(--bg-elevated);
+    background: var(--bg-app);
     flex-shrink: 0;
   }
 
@@ -176,7 +176,7 @@
   .subagent-status {
     padding: 60px 16px;
     text-align: center;
-    color: #5a5a7a;
+    color: var(--text-faint);
     font-size: 13px;
   }
 
@@ -193,7 +193,7 @@
   }
 
   .subagent-scroll::-webkit-scrollbar-thumb {
-    background: #2a2a4a;
+    background: var(--border);
     border-radius: 4px;
   }
 </style>

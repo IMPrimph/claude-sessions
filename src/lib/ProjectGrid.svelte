@@ -3,6 +3,7 @@
   import type { ProjectInfo, GlobalSearchResult } from "./types";
   import { preferences, toggleDateFormat } from "./preferences.svelte";
   import { bookmarks } from "./bookmarks.svelte";
+  import BrandMark from "./BrandMark.svelte";
 
   let {
     projects,
@@ -135,6 +136,7 @@
 <div class="project-grid-page">
   <div class="project-header">
     <div class="title-row">
+      <div class="brand-badge"><BrandMark size={30} /></div>
       <h1>Claude Sessions</h1>
       <span class="version-badge">v0.7.1</span>
       {#if onOpenBookmarks}
@@ -164,6 +166,7 @@
         </button>
       {/if}
     </div>
+    <p class="tagline">Keep your Claude Code history. Nothing expires.</p>
     <p class="subtitle">
       {projects.length} {projects.length === 1 ? "project" : "projects"}
       &middot; {totalSessions} {totalSessions === 1 ? "session" : "sessions"}
@@ -275,7 +278,7 @@
   .project-grid-page {
     height: 100vh;
     overflow-y: auto;
-    background: #12121e;
+    background: var(--bg-app);
     padding: 48px 64px;
   }
 
@@ -286,21 +289,38 @@
   .title-row {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 13px;
     margin-bottom: 8px;
+  }
+
+  /* Logo badge — the elephant in a charcoal amber-glow tile echoing the dock icon. */
+  .brand-badge {
+    width: 46px;
+    height: 46px;
+    border-radius: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    background: radial-gradient(120% 120% at 30% 20%, #26262b 0%, #0e0e10 100%);
+    border: 1px solid rgba(245, 158, 11, 0.22);
+    box-shadow:
+      0 4px 14px rgba(0, 0, 0, 0.4),
+      0 0 26px rgba(245, 158, 11, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
 
   .project-header h1 {
     font-size: 24px;
     font-weight: 700;
-    color: #e0e0f0;
+    color: var(--text-primary);
     margin: 0;
   }
 
   .version-badge {
     font-size: 11px;
     font-weight: 600;
-    color: #818cf8;
+    color: var(--accent-hover);
     background: rgba(99, 102, 241, 0.12);
     border: 1px solid rgba(99, 102, 241, 0.28);
     padding: 3px 8px;
@@ -314,9 +334,9 @@
     align-items: center;
     gap: 6px;
     font-size: 11px;
-    color: #7a7a9a;
+    color: var(--text-muted);
     background: transparent;
-    border: 1px solid #2a2a4a;
+    border: 1px solid var(--border);
     padding: 4px 10px;
     border-radius: 6px;
     cursor: pointer;
@@ -324,8 +344,8 @@
   }
 
   .update-check-btn:hover {
-    color: #c0c0d8;
-    border-color: #3a3a5a;
+    color: var(--text-secondary);
+    border-color: var(--border-strong);
     background: rgba(255, 255, 255, 0.03);
   }
 
@@ -333,16 +353,23 @@
     margin-left: 5px;
     font-size: 10px;
     font-weight: 600;
-    color: #a5b4fc;
+    color: var(--accent-bright);
     background: rgba(99, 102, 241, 0.18);
     padding: 1px 6px;
     border-radius: 999px;
     font-variant-numeric: tabular-nums;
   }
 
+  .tagline {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin: 0 0 5px;
+  }
+
   .subtitle {
     font-size: 14px;
-    color: #6a6a8a;
+    color: var(--text-faint);
     margin: 0;
   }
 
@@ -363,15 +390,15 @@
     left: 14px;
     top: 50%;
     transform: translateY(-50%);
-    color: #5a5a7a;
+    color: var(--text-faint);
     pointer-events: none;
   }
 
   .search-container input {
     width: 100%;
-    background: #1a1a2e;
-    border: 1px solid #2a2a4a;
-    color: #e0e0e0;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
     padding: 12px 48px 12px 44px;
     border-radius: 10px;
     font-size: 14px;
@@ -380,11 +407,11 @@
   }
 
   .search-container input:focus {
-    border-color: #6366f1;
+    border-color: var(--accent);
   }
 
   .search-container input::placeholder {
-    color: #5a5a7a;
+    color: var(--text-faint);
   }
 
   .search-kbd {
@@ -393,9 +420,9 @@
     top: 50%;
     transform: translateY(-50%);
     font-size: 10px;
-    color: #5a5a7a;
-    background: #12121e;
-    border: 1px solid #2a2a4a;
+    color: var(--text-faint);
+    background: var(--bg-app);
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 2px 6px;
     font-family: monospace;
@@ -407,8 +434,8 @@
     top: calc(100% + 4px);
     left: 0;
     right: 0;
-    background: #16162a;
-    border: 1px solid #2a2a4a;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
     border-radius: 10px;
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
     max-height: 420px;
@@ -422,13 +449,13 @@
   }
 
   .dropdown-section + .dropdown-section {
-    border-top: 1px solid #2a2a4a;
+    border-top: 1px solid var(--border);
   }
 
   .dropdown-section-label {
     font-size: 10px;
     font-weight: 600;
-    color: #5a5a7a;
+    color: var(--text-faint);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     padding: 8px 12px 4px;
@@ -437,7 +464,7 @@
   .dropdown-status {
     padding: 12px;
     text-align: center;
-    color: #5a5a7a;
+    color: var(--text-faint);
     font-size: 12px;
   }
 
@@ -449,7 +476,7 @@
     text-align: left;
     background: transparent;
     border: none;
-    color: #c0c0d8;
+    color: var(--text-secondary);
     padding: 8px 12px;
     border-radius: 6px;
     cursor: pointer;
@@ -461,7 +488,7 @@
   }
 
   .dropdown-item svg {
-    color: #6366f1;
+    color: var(--accent);
     flex-shrink: 0;
     margin-top: 2px;
   }
@@ -476,7 +503,7 @@
   .dropdown-item-name {
     font-size: 13px;
     font-weight: 500;
-    color: #d8d8f0;
+    color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -484,12 +511,12 @@
 
   .dropdown-item-meta {
     font-size: 11px;
-    color: #5a5a7a;
+    color: var(--text-faint);
   }
 
   .dropdown-item-match {
     font-size: 11px;
-    color: #7a7a9a;
+    color: var(--text-muted);
     line-height: 1.4;
     display: -webkit-box;
     -webkit-line-clamp: 2;
@@ -505,13 +532,13 @@
 
   .result-project {
     font-size: 11px;
-    color: #6366f1;
+    color: var(--accent);
     font-weight: 600;
   }
 
   .result-badge {
     font-size: 9px;
-    color: #5a5a7a;
+    color: var(--text-faint);
     background: rgba(255, 255, 255, 0.05);
     padding: 1px 5px;
     border-radius: 3px;
@@ -527,7 +554,7 @@
   }
 
   .search-dropdown::-webkit-scrollbar-thumb {
-    background: #2a2a4a;
+    background: var(--border);
     border-radius: 3px;
   }
 
@@ -541,8 +568,8 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    background: #1a1a2e;
-    border: 1px solid #2a2a4a;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border);
     border-radius: 12px;
     padding: 20px;
     cursor: pointer;
@@ -552,47 +579,47 @@
   }
 
   .project-card:hover {
-    background: #1e1e36;
-    border-color: #6366f1;
+    background: var(--bg-elevated);
+    border-color: var(--accent);
     transform: translateY(-2px);
   }
 
   .card-icon {
-    color: #6366f1;
+    color: var(--accent);
     margin-bottom: 12px;
   }
 
   .card-name {
     font-size: 16px;
     font-weight: 600;
-    color: #e0e0f0;
+    color: var(--text-primary);
     margin-bottom: 4px;
   }
 
   .card-path {
     font-size: 12px;
-    color: #5a5a7a;
+    color: var(--text-faint);
     margin-bottom: 12px;
     word-break: break-all;
   }
 
   .card-meta {
     font-size: 12px;
-    color: #7a7a9a;
+    color: var(--text-muted);
     display: flex;
     align-items: center;
     gap: 6px;
   }
 
   .dot {
-    color: #3a3a5a;
+    color: var(--border-strong);
   }
 
   .empty-state {
     grid-column: 1 / -1;
     text-align: center;
     padding: 48px;
-    color: #5a5a7a;
+    color: var(--text-faint);
     font-size: 14px;
   }
 
@@ -605,7 +632,7 @@
   }
 
   .project-grid-page::-webkit-scrollbar-thumb {
-    background: #2a2a4a;
+    background: var(--border);
     border-radius: 4px;
   }
 </style>

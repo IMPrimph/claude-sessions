@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use tauri::Manager;
 
 // ── Types returned to the frontend ──────────────────────────────────────────
 
@@ -31,6 +32,10 @@ pub struct SessionInfo {
     pub conversation_count: u64,
     pub total_tokens: u64,
     pub git_branch: Option<String>,
+    /// Set when this session was created by forking/branching another session
+    /// (`/branch` in Claude Code). Holds the parent session's id; the frontend
+    /// resolves it to the parent's title and shows a "fork of …" badge.
+    pub forked_from_session_id: Option<String>,
     pub jsonl_path: String,
 }
 
@@ -41,6 +46,49 @@ pub struct ConversationMessage {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<MessageImage>,
+    /// True on an assistant reply that was cut off mid-response by the user
+    /// pressing Esc (the transcript records a synthetic
+    /// `[Request interrupted by user]` marker right after it).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
+    /// True on a user message that was sent *during* an interruption — i.e. it
+    /// came after an interrupt marker and before Claude's reply resumed. These
+    /// are the "mid-turn" steering messages fired while Claude was still working.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub mid_turn: bool,
+    /// Present only when `role == "agent-notification"`: the parsed contents of a
+    /// `<task-notification>` entry (a background subagent / workflow agent
+    /// finishing). Claude Code injects these with `type:"user"`, but they are not
+    /// something the user typed — they are surfaced as a distinct card, not a bubble.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification: Option<AgentNotification>,
+}
+
+/// A background agent / workflow completion event, parsed from a
+/// `<task-notification>` transcript entry. Covers single subagents, dynamic
+/// workflows, and multi-agent fan-outs (they share the same wrapper).
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct AgentNotification {
+    /// Human summary, e.g. `Agent "Map Archer database domain model" finished`.
+    pub summary: String,
+    /// `completed`, `error`, etc.
+    pub status: String,
+    /// The agent's full returned output. May be large; the UI keeps it collapsed.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub result: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_uses: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    // Multi-agent fan-out summaries carry these instead of per-agent usage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents_done: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents_error: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -97,6 +145,10 @@ struct JsonlEntry {
     timestamp: Option<String>,
     #[serde(rename = "requestId")]
     request_id: Option<String>,
+    /// Present on `type:"attachment"` entries. A `queued_command` attachment is a
+    /// message the user queued while Claude was still working — Claude Code stores
+    /// it here rather than as a normal user turn, so we surface it explicitly.
+    attachment: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,22 +160,351 @@ struct JsonlMessage {
 // ── Commands ────────────────────────────────────────────────────────────────
 
 /// Returns the absolute path to a session's pasted image, if it exists.
-/// Claude Code caches pasted images at ~/.claude/image-cache/<session_id>/<N>.<ext>
+/// Claude Code caches pasted images at ~/.claude/image-cache/<session_id>/<N>.<ext>.
+/// Falls back to the local archive so images survive Claude Code's 30-day cleanup.
 #[tauri::command]
-pub fn get_image_path(session_id: String, image_number: u32) -> Option<String> {
-    let home = dirs::home_dir()?;
-    let base = home
-        .join(".claude")
-        .join("image-cache")
-        .join(&session_id);
+pub fn get_image_path(app: tauri::AppHandle, session_id: String, image_number: u32) -> Option<String> {
+    let image_in = |base: PathBuf| -> Option<String> {
+        for extension in ["png", "jpg", "jpeg", "gif", "webp"] {
+            let path = base.join(format!("{}.{}", image_number, extension));
+            if path.exists() {
+                return Some(path.to_string_lossy().to_string());
+            }
+        }
+        None
+    };
 
-    for extension in ["png", "jpg", "jpeg", "gif", "webp"] {
-        let path = base.join(format!("{}.{}", image_number, extension));
-        if path.exists() {
-            return Some(path.to_string_lossy().to_string());
+    // Live cache first.
+    if let Some(home) = dirs::home_dir() {
+        if let Some(found) = image_in(home.join(".claude").join("image-cache").join(&session_id)) {
+            return Some(found);
+        }
+    }
+    // Archive fallback (the live cache may have expired).
+    if let Ok(root) = archive_root(&app) {
+        if let Some(found) = image_in(root.join("image-cache").join(&session_id)) {
+            return Some(found);
         }
     }
     None
+}
+
+/// Path of the small config file that can hold a user-chosen archive location.
+fn config_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|resolve_error| format!("Cannot resolve app data dir: {}", resolve_error))?;
+    Ok(data_dir.join("config.json"))
+}
+
+/// Root of the local session archive. Defaults to <app_data_dir>/archive, but
+/// honors a user-chosen location stored in config.json (Settings → Storage).
+fn archive_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|resolve_error| format!("Cannot resolve app data dir: {}", resolve_error))?;
+
+    if let Ok(text) = fs::read_to_string(data_dir.join("config.json")) {
+        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+            if let Some(custom) = value.get("archivePath").and_then(|path| path.as_str()) {
+                let trimmed = custom.trim();
+                if !trimmed.is_empty() {
+                    return Ok(PathBuf::from(trimmed));
+                }
+            }
+        }
+    }
+    Ok(data_dir.join("archive"))
+}
+
+/// Recursive total size of a directory in bytes (0 if it doesn't exist).
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                total += dir_size(&entry_path);
+            } else if let Ok(metadata) = entry.metadata() {
+                total += metadata.len();
+            }
+        }
+    }
+    total
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ArchiveInfo {
+    pub path: String,
+    pub session_count: u64,
+    pub total_bytes: u64,
+    /// True when using a user-chosen location rather than the app default.
+    pub is_custom: bool,
+}
+
+fn archive_info(app: &tauri::AppHandle) -> Result<ArchiveInfo, String> {
+    let root = archive_root(app)?;
+    let default_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("{}", error))?
+        .join("archive");
+
+    let mut session_count = 0;
+    if let Ok(entries) = fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            // Each archived session is its own dir; the shared image-cache dir isn't one.
+            if entry.path().is_dir() && entry.file_name() != "image-cache" {
+                session_count += 1;
+            }
+        }
+    }
+
+    Ok(ArchiveInfo {
+        path: root.to_string_lossy().to_string(),
+        session_count,
+        total_bytes: dir_size(&root),
+        is_custom: root != default_root,
+    })
+}
+
+/// Transparency for Settings → Storage: where archives live, how many, total size.
+#[tauri::command]
+pub fn get_archive_info(app: tauri::AppHandle) -> Result<ArchiveInfo, String> {
+    archive_info(&app)
+}
+
+/// Move the archive to a user-chosen folder and remember it. Existing archived
+/// sessions are moved along, so nothing is orphaned. Returns updated info.
+#[tauri::command]
+pub fn set_archive_location(
+    app: tauri::AppHandle,
+    new_parent_dir: String,
+) -> Result<ArchiveInfo, String> {
+    let old_root = archive_root(&app)?;
+    // Nest under a named folder so we never dump files into e.g. Documents root.
+    let target = PathBuf::from(&new_parent_dir).join("ClaudeSessionsArchive");
+
+    if target == old_root {
+        return archive_info(&app);
+    }
+
+    fs::create_dir_all(&target)
+        .map_err(|error| format!("Cannot create archive folder: {}", error))?;
+
+    // Move existing archives across (copy then remove the old root).
+    if old_root.exists() {
+        copy_dir_recursive(&old_root, &target)
+            .map_err(|error| format!("Failed to move existing archives: {}", error))?;
+        let _ = fs::remove_dir_all(&old_root);
+    }
+
+    let data_dir = config_file(&app)?
+        .parent()
+        .map(|dir| dir.to_path_buf())
+        .ok_or_else(|| "Cannot resolve config dir".to_string())?;
+    fs::create_dir_all(&data_dir).map_err(|error| format!("{}", error))?;
+    let config = serde_json::json!({ "archivePath": target.to_string_lossy() });
+    fs::write(
+        config_file(&app)?,
+        serde_json::to_string_pretty(&config).unwrap_or_default(),
+    )
+    .map_err(|error| format!("Cannot save config: {}", error))?;
+
+    archive_info(&app)
+}
+
+/// Reset the archive back to the app-default location (moves files back too).
+#[tauri::command]
+pub fn reset_archive_location(app: tauri::AppHandle) -> Result<ArchiveInfo, String> {
+    let old_root = archive_root(&app)?;
+    let default_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("{}", error))?
+        .join("archive");
+
+    if old_root != default_root && old_root.exists() {
+        fs::create_dir_all(&default_root).map_err(|error| format!("{}", error))?;
+        copy_dir_recursive(&old_root, &default_root)
+            .map_err(|error| format!("Failed to move archives back: {}", error))?;
+        let _ = fs::remove_dir_all(&old_root);
+    }
+    let _ = fs::remove_file(config_file(&app)?);
+    archive_info(&app)
+}
+
+/// Reveal the archive folder in Finder.
+#[tauri::command]
+pub fn open_archive_location(app: tauri::AppHandle) -> Result<(), String> {
+    let root = archive_root(&app)?;
+    fs::create_dir_all(&root).ok();
+    std::process::Command::new("open")
+        .arg(&root)
+        .spawn()
+        .map_err(|error| format!("Cannot open folder: {}", error))?;
+    Ok(())
+}
+
+/// Recursively copy a directory (used for subagent transcripts + image caches).
+fn copy_dir_recursive(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Core archive logic against an explicit root (so it's unit-testable without a
+/// running Tauri app). Mirrors the parent-relative layout — <root>/<id>/<id>.jsonl
+/// and <root>/<id>/<id>/subagents — so the existing path derivations keep working
+/// when reading from the archive. Idempotent: the transcript is re-copied only when
+/// the source is newer than the archived copy.
+fn archive_session_to(
+    root: &Path,
+    source_jsonl: &Path,
+    session_id: &str,
+    live_images: Option<&Path>,
+    meta: &Value,
+) -> Result<(), String> {
+    if !source_jsonl.exists() {
+        return Err(format!("Session file not found: {}", source_jsonl.display()));
+    }
+    let session_dir = root.join(session_id);
+    fs::create_dir_all(&session_dir)
+        .map_err(|create_error| format!("Cannot create archive dir: {}", create_error))?;
+
+    // Re-archive only when the live transcript is newer than the archived copy —
+    // so opening an unchanged saved session is a no-op (no wasteful re-copy of the
+    // transcript, subagents, or images), while a session you kept working in gets
+    // fully refreshed.
+    let dest_jsonl = session_dir.join(format!("{}.jsonl", session_id));
+    let source_newer = match (fs::metadata(&dest_jsonl), fs::metadata(source_jsonl)) {
+        (Ok(dest_meta), Ok(source_meta)) => match (dest_meta.modified(), source_meta.modified()) {
+            (Ok(dest_time), Ok(source_time)) => source_time > dest_time,
+            _ => true,
+        },
+        _ => true,
+    };
+    if !source_newer {
+        return Ok(());
+    }
+
+    // 1) Transcript.
+    fs::copy(source_jsonl, &dest_jsonl)
+        .map_err(|copy_error| format!("Copy transcript failed: {}", copy_error))?;
+
+    // 2) Subagent logs: <project_dir>/<id>/subagents → <root>/<id>/<id>/subagents
+    if let Some(parent_dir) = source_jsonl.parent() {
+        let source_subagents = parent_dir.join(session_id).join("subagents");
+        if source_subagents.is_dir() {
+            let dest_subagents = session_dir.join(session_id).join("subagents");
+            let _ = copy_dir_recursive(&source_subagents, &dest_subagents);
+        }
+    }
+
+    // 3) Pasted images: <images>/… → <root>/image-cache/<id>
+    if let Some(images) = live_images {
+        if images.is_dir() {
+            let _ = copy_dir_recursive(images, &root.join("image-cache").join(session_id));
+        }
+    }
+
+    // 4) Self-describing metadata so the archive stands on its own.
+    let _ = fs::write(
+        session_dir.join("meta.json"),
+        serde_json::to_string_pretty(meta).unwrap_or_default(),
+    );
+
+    Ok(())
+}
+
+/// Copy a session's transcript + subagent logs + pasted images into the local
+/// archive so it survives Claude Code's 30-day cleanup, keeping bookmarks openable.
+#[tauri::command]
+pub fn archive_session(
+    app: tauri::AppHandle,
+    jsonl_path: String,
+    session_id: String,
+    project_path: String,
+    project_name: String,
+    title: Option<String>,
+) -> Result<(), String> {
+    let root = archive_root(&app)?;
+    let source = PathBuf::from(&jsonl_path);
+    let live_images = dirs::home_dir()
+        .map(|home| home.join(".claude").join("image-cache").join(&session_id));
+    let meta = serde_json::json!({
+        "session_id": session_id,
+        "project_path": project_path,
+        "project_name": project_name,
+        "title": title,
+        "source_path": jsonl_path,
+        "archived_at": chrono::Utc::now().to_rfc3339(),
+    });
+    archive_session_to(&root, &source, &session_id, live_images.as_deref(), &meta)
+}
+
+/// If a session has been archived, returns its archived transcript path — used as a
+/// fallback when the live file has expired. None if the session isn't archived.
+#[tauri::command]
+pub fn get_archived_session_path(app: tauri::AppHandle, session_id: String) -> Option<String> {
+    let root = archive_root(&app).ok()?;
+    let dest = root.join(&session_id).join(format!("{}.jsonl", session_id));
+    if dest.exists() {
+        Some(dest.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+/// The session ids that currently have an archived copy — so the UI can mark saved
+/// sessions in the list and header with one call instead of one probe per session.
+#[tauri::command]
+pub fn get_archived_session_ids(app: tauri::AppHandle) -> Vec<String> {
+    let root = match archive_root(&app) {
+        Ok(root) => root,
+        Err(_) => return Vec::new(),
+    };
+    let mut ids = Vec::new();
+    if let Ok(entries) = fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "image-cache" || !entry.path().is_dir() {
+                continue;
+            }
+            // Only count it as saved if the transcript is actually present.
+            if entry.path().join(format!("{}.jsonl", name)).exists() {
+                ids.push(name);
+            }
+        }
+    }
+    ids
+}
+
+/// Remove a session's archived copy (transcript + subagents + images + meta). Deletes
+/// only our archive — the live session, if any, is untouched.
+#[tauri::command]
+pub fn unarchive_session(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+    let root = archive_root(&app)?;
+    let session_dir = root.join(&session_id);
+    if session_dir.exists() {
+        fs::remove_dir_all(&session_dir)
+            .map_err(|error| format!("Failed to remove archived session: {}", error))?;
+    }
+    let images = root.join("image-cache").join(&session_id);
+    if images.exists() {
+        let _ = fs::remove_dir_all(&images);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -508,6 +889,30 @@ fn format_relative_time(mtime_ms: u64) -> String {
     }
 }
 
+/// Peek a session's first lines for a `forkedFrom.sessionId`. Claude Code stamps
+/// this on every entry inherited from the parent when a session is forked
+/// (`/branch`), so it's present from line 1 — reading a few lines is enough and
+/// stays cheap even for multi-MB sessions.
+fn detect_fork_parent(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines().map_while(Result::ok).take(5) {
+        if !line.contains("\"forkedFrom\"") {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(&line) {
+            if let Some(parent) = value
+                .get("forkedFrom")
+                .and_then(|fork| fork.get("sessionId"))
+                .and_then(|id| id.as_str())
+            {
+                return Some(parent.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[tauri::command]
 pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, String> {
     let claude_dir = get_claude_projects_dir()?;
@@ -580,6 +985,7 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
                             conversation_count: 0,
                             total_tokens: 0,
                             git_branch: entry.git_branch,
+                            forked_from_session_id: detect_fork_parent(&jsonl_pathbuf),
                             jsonl_path,
                         });
                     }
@@ -624,6 +1030,7 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
                                 conversation_count: metadata.conversation_count,
                                 total_tokens: metadata.total_tokens,
                                 git_branch: None,
+                                forked_from_session_id: detect_fork_parent(&file_path),
                                 jsonl_path: file_path.to_string_lossy().to_string(),
                             });
                         }
@@ -668,6 +1075,7 @@ pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, S
                         conversation_count: metadata.conversation_count,
                         total_tokens: metadata.total_tokens,
                         git_branch: None,
+                        forked_from_session_id: detect_fork_parent(&file_path),
                         jsonl_path: file_path.to_string_lossy().to_string(),
                     });
                 }
@@ -1131,6 +1539,281 @@ pub fn get_tool_results(
     Ok(results)
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct AnsweredOption {
+    pub label: String,
+    pub description: String,
+    pub chosen: bool,
+    /// True when this wasn't one of the offered choices — i.e. the user picked
+    /// "Other" and typed a custom answer.
+    pub custom: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct AnsweredQuestion {
+    pub question: String,
+    pub header: String,
+    pub multi_select: bool,
+    pub options: Vec<AnsweredOption>,
+    /// Free-text note the user attached to their answer (from `annotations`).
+    /// Present even when no option was chosen — sometimes the note IS the answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// Extract every AskUserQuestion Q&A from a session, keyed by the asking tool's
+/// tool_use_id. Each answer entry's `toolUseResult` is self-contained: it carries
+/// the questions, the offered options, AND the user's chosen answer(s) in an
+/// `answers` map, so a single pass over the tool_result entries is enough. The
+/// frontend renders this inline under the AskUserQuestion pill, chosen option lit.
+#[tauri::command]
+pub fn get_session_questions(
+    jsonl_path: String,
+) -> Result<std::collections::HashMap<String, Vec<AnsweredQuestion>>, String> {
+    let path = PathBuf::from(&jsonl_path);
+    if !path.exists() {
+        return Err(format!("Session file not found: {}", jsonl_path));
+    }
+
+    let file = fs::File::open(&path)
+        .map_err(|open_error| format!("Cannot open file: {}", open_error))?;
+    let reader = BufReader::new(file);
+
+    let mut results: std::collections::HashMap<String, Vec<AnsweredQuestion>> =
+        std::collections::HashMap::new();
+
+    for line in reader.lines().map_while(Result::ok) {
+        // Fast pre-check — the answer entry always carries a toolUseResult with questions.
+        if !line.contains("\"toolUseResult\"") || !line.contains("\"questions\"") {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+
+        let tool_use_result = match value.get("toolUseResult") {
+            Some(result) => result,
+            None => continue,
+        };
+        let questions = match tool_use_result.get("questions").and_then(|val| val.as_array()) {
+            Some(questions) => questions,
+            None => continue,
+        };
+
+        // The tool_use_id ties this answer back to the assistant's AskUserQuestion pill.
+        let tool_use_id = match find_tool_result_id(&value) {
+            Some(id) => id,
+            None => continue,
+        };
+
+        let parsed = parse_answered_questions(
+            questions,
+            tool_use_result.get("answers"),
+            tool_use_result.get("annotations"),
+        );
+        if !parsed.is_empty() {
+            results.insert(tool_use_id, parsed);
+        }
+    }
+
+    Ok(results)
+}
+
+/// The tool_use_id of the first tool_result block in a user entry's message content.
+fn find_tool_result_id(entry: &Value) -> Option<String> {
+    let blocks = entry
+        .get("message")
+        .and_then(|msg| msg.get("content"))
+        .and_then(|val| val.as_array())?;
+    for block in blocks {
+        if block.get("type").and_then(|val| val.as_str()) == Some("tool_result") {
+            if let Some(id) = block.get("tool_use_id").and_then(|val| val.as_str()) {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Collect a question's chosen answer(s). Single-select stores a bare string;
+/// multi-select stores the picked labels joined as "A, B" (NOT a JSON array), so
+/// for multi-select we split on ", " and match each part back to an option. A
+/// JSON array is also accepted in case the stored format ever changes. Keyed by
+/// exact question text — the map is sparse (only answered questions appear), so a
+/// positional fallback would mis-attribute one question's answer to another.
+fn answer_values(answers: Option<&Value>, question: &str, multi_select: bool) -> Vec<String> {
+    let map = match answers.and_then(|val| val.as_object()) {
+        Some(map) => map,
+        None => return Vec::new(),
+    };
+    match map.get(question) {
+        Some(Value::String(text)) if multi_select => text
+            .split(", ")
+            .map(|part| part.trim().to_string())
+            .filter(|part| !part.is_empty())
+            .collect(),
+        Some(Value::String(text)) => vec![text.clone()],
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(|text| text.to_string()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The free-text note the user attached to a question, from the `annotations`
+/// map. Keyed by exact question text — the map is sparse (only annotated
+/// questions appear), so positional matching would cross-attribute notes.
+fn question_note(annotations: Option<&Value>, question: &str) -> Option<String> {
+    let map = annotations?.as_object()?;
+    let entry = map.get(question)?;
+    entry
+        .get("notes")
+        .and_then(|note| note.as_str())
+        .map(|note| note.trim().to_string())
+        .filter(|note| !note.is_empty())
+}
+
+fn parse_answered_questions(
+    questions: &[Value],
+    answers: Option<&Value>,
+    annotations: Option<&Value>,
+) -> Vec<AnsweredQuestion> {
+    let mut parsed = Vec::new();
+    for question_value in questions.iter() {
+        let question = question_value
+            .get("question")
+            .and_then(|val| val.as_str())
+            .unwrap_or("")
+            .to_string();
+        let header = question_value
+            .get("header")
+            .and_then(|val| val.as_str())
+            .unwrap_or("")
+            .to_string();
+        let multi_select = question_value
+            .get("multiSelect")
+            .and_then(|val| val.as_bool())
+            .unwrap_or(false);
+
+        let chosen = answer_values(answers, &question, multi_select);
+
+        let mut options: Vec<AnsweredOption> = Vec::new();
+        if let Some(option_values) = question_value.get("options").and_then(|val| val.as_array()) {
+            for option_value in option_values {
+                let label = option_value
+                    .get("label")
+                    .and_then(|val| val.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let description = option_value
+                    .get("description")
+                    .and_then(|val| val.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let is_chosen = chosen.iter().any(|answer| answer == &label);
+                options.push(AnsweredOption {
+                    label,
+                    description,
+                    chosen: is_chosen,
+                    custom: false,
+                });
+            }
+        }
+
+        // A chosen answer matching no offered label = the user picked "Other" and
+        // typed their own text. Surface it so the real answer isn't lost.
+        for answer in &chosen {
+            if !options.iter().any(|option| &option.label == answer) {
+                options.push(AnsweredOption {
+                    label: answer.clone(),
+                    description: String::new(),
+                    chosen: true,
+                    custom: true,
+                });
+            }
+        }
+
+        let notes = question_note(annotations, &question);
+
+        parsed.push(AnsweredQuestion {
+            question,
+            header,
+            multi_select,
+            options,
+            notes,
+        });
+    }
+    parsed
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SessionArtifact {
+    pub url: String,
+    pub title: String,
+    /// Local source file that was published (informational).
+    pub path: String,
+}
+
+/// Extract every published Artifact from a session, keyed by the Artifact tool's
+/// tool_use_id. The answer entry's `toolUseResult` carries {url, path, title}, so
+/// a single pass over the tool_result entries is enough. The frontend renders a
+/// card with the title and a copy-link button in place of the generic pill.
+#[tauri::command]
+pub fn get_session_artifacts(
+    jsonl_path: String,
+) -> Result<std::collections::HashMap<String, SessionArtifact>, String> {
+    let path = PathBuf::from(&jsonl_path);
+    if !path.exists() {
+        return Err(format!("Session file not found: {}", jsonl_path));
+    }
+
+    let file = fs::File::open(&path)
+        .map_err(|open_error| format!("Cannot open file: {}", open_error))?;
+    let reader = BufReader::new(file);
+
+    let mut results: std::collections::HashMap<String, SessionArtifact> =
+        std::collections::HashMap::new();
+
+    for line in reader.lines().map_while(Result::ok) {
+        // Fast pre-check — the published URL always contains this path segment.
+        if !line.contains("/code/artifact/") {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+        let tool_use_result = match value.get("toolUseResult") {
+            Some(result) => result,
+            None => continue,
+        };
+        let url = match tool_use_result.get("url").and_then(|value| value.as_str()) {
+            Some(url) if url.contains("/code/artifact/") => url.to_string(),
+            _ => continue,
+        };
+        let tool_use_id = match find_tool_result_id(&value) {
+            Some(id) => id,
+            None => continue,
+        };
+        let title = tool_use_result
+            .get("title")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string();
+        let artifact_path = tool_use_result
+            .get("path")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        results.insert(tool_use_id, SessionArtifact { url, title, path: artifact_path });
+    }
+
+    Ok(results)
+}
+
 /// Detect the `Full output saved to: <path>` line inside a `<persisted-output>` block.
 /// Returns the path so the frontend can load the full output on demand.
 fn extract_persisted_path(content: &str) -> Option<String> {
@@ -1445,8 +2128,13 @@ pub fn get_subagent_messages(jsonl_path: String) -> Result<Vec<ConversationMessa
     let mut current_assistant_text = String::new();
     let mut current_assistant_timestamp = String::new();
     let mut in_assistant_turn = false;
+    let mut interrupt_active = false;
     let mut pending_assistant: Option<JsonlEntry> = None;
     let empty_map = std::collections::HashMap::new();
+    // Subagent logs don't contain user-queued messages, but the attachment
+    // dispatch needs a set — an empty one means no dedup is applied.
+    let queued_dedup: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_task_notifications: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for line in reader.lines().map_while(Result::ok) {
         if line.trim().is_empty() {
@@ -1490,6 +2178,7 @@ pub fn get_subagent_messages(jsonl_path: String) -> Result<Vec<ConversationMessa
                     &mut current_assistant_text,
                     &mut current_assistant_timestamp,
                     &mut in_assistant_turn,
+                    &mut interrupt_active,
                     &empty_map,
                 );
             }
@@ -1503,6 +2192,7 @@ pub fn get_subagent_messages(jsonl_path: String) -> Result<Vec<ConversationMessa
                 &mut current_assistant_text,
                 &mut current_assistant_timestamp,
                 &mut in_assistant_turn,
+                &mut interrupt_active,
                 &empty_map,
             );
         }
@@ -1514,6 +2204,18 @@ pub fn get_subagent_messages(jsonl_path: String) -> Result<Vec<ConversationMessa
                 &mut current_assistant_text,
                 &mut current_assistant_timestamp,
                 &mut in_assistant_turn,
+                &mut interrupt_active,
+                &mut seen_task_notifications,
+            );
+        } else if entry_type == "attachment" {
+            process_attachment_entry(
+                entry,
+                &mut messages,
+                &mut current_assistant_text,
+                &mut current_assistant_timestamp,
+                &mut in_assistant_turn,
+                &queued_dedup,
+                &mut seen_task_notifications,
             );
         }
     }
@@ -1524,6 +2226,7 @@ pub fn get_subagent_messages(jsonl_path: String) -> Result<Vec<ConversationMessa
             &mut current_assistant_text,
             &mut current_assistant_timestamp,
             &mut in_assistant_turn,
+            &mut interrupt_active,
             &empty_map,
         );
     }
@@ -1545,6 +2248,9 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
     }
 
     let tool_to_agent = build_tool_to_agent_map(&path);
+    // Normal user-message texts, so a queued_command attachment that also appears
+    // as a normal user turn isn't surfaced twice.
+    let queued_dedup = collect_normal_user_texts(&path);
 
     let file =
         fs::File::open(&path).map_err(|open_error| format!("Cannot open file: {}", open_error))?;
@@ -1554,6 +2260,12 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
     let mut current_assistant_text = String::new();
     let mut current_assistant_timestamp = String::new();
     let mut in_assistant_turn = false;
+    // Armed by an interrupt marker, cleared when the next assistant turn begins;
+    // while armed, user messages are tagged as mid-turn interjections.
+    let mut interrupt_active = false;
+    // A background-agent task-notification can be stored as both a delivered user
+    // entry and a queued attachment; this shared set ensures it renders once.
+    let mut seen_task_notifications: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Streaming dedup: Claude Code writes multiple JSONL entries per API response
     // with the same requestId, each superseding the previous one. Buffer the most
@@ -1598,6 +2310,7 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
                     &mut current_assistant_text,
                     &mut current_assistant_timestamp,
                     &mut in_assistant_turn,
+                    &mut interrupt_active,
                     &tool_to_agent,
                 );
             }
@@ -1612,6 +2325,7 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
                 &mut current_assistant_text,
                 &mut current_assistant_timestamp,
                 &mut in_assistant_turn,
+                &mut interrupt_active,
                 &tool_to_agent,
             );
         }
@@ -1623,6 +2337,18 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
                 &mut current_assistant_text,
                 &mut current_assistant_timestamp,
                 &mut in_assistant_turn,
+                &mut interrupt_active,
+                &mut seen_task_notifications,
+            );
+        } else if entry_type == "attachment" {
+            process_attachment_entry(
+                entry,
+                &mut messages,
+                &mut current_assistant_text,
+                &mut current_assistant_timestamp,
+                &mut in_assistant_turn,
+                &queued_dedup,
+                &mut seen_task_notifications,
             );
         }
         // Other entry types (system/summary/etc.) are already filtered by should_skip_entry
@@ -1635,6 +2361,7 @@ pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessag
             &mut current_assistant_text,
             &mut current_assistant_timestamp,
             &mut in_assistant_turn,
+            &mut interrupt_active,
             &tool_to_agent,
         );
     }
@@ -1663,16 +2390,30 @@ fn should_skip_entry(entry: &JsonlEntry) -> bool {
     )
 }
 
+/// Exact text of the synthetic markers Claude Code writes when the user presses
+/// Esc. The marker's content may be a bare string or a `[{type:text,...}]` list,
+/// but `extract_user_text` normalises both to this plain string before we match.
+fn is_interrupt_marker(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "[Request interrupted by user]" | "[Request interrupted by user for tool use]"
+    )
+}
+
 fn accumulate_assistant_with_map(
     entry: JsonlEntry,
     current_text: &mut String,
     current_timestamp: &mut String,
     in_turn: &mut bool,
+    interrupt_active: &mut bool,
     tool_to_agent: &std::collections::HashMap<String, String>,
 ) {
     if !*in_turn {
         *in_turn = true;
         *current_timestamp = entry.timestamp.clone().unwrap_or_default();
+        // A fresh assistant turn is starting, so any pending interruption is over —
+        // subsequent user messages are ordinary turns again, not mid-turn interjections.
+        *interrupt_active = false;
     }
     if let Some(message) = &entry.message {
         let text_parts = extract_assistant_text_with_map(&message.content, tool_to_agent);
@@ -1685,16 +2426,217 @@ fn accumulate_assistant_with_map(
     }
 }
 
+/// Build MessageImages from the image blocks of a queued_command prompt, pairing
+/// them with `[Image #N]` references the same way ordinary user images are paired.
+fn attachment_images(prompt: &[Value], text: &str) -> Vec<MessageImage> {
+    let image_blocks: Vec<&Value> = prompt
+        .iter()
+        .filter(|part| part.get("type").and_then(|kind| kind.as_str()) == Some("image"))
+        .collect();
+    if image_blocks.is_empty() {
+        return Vec::new();
+    }
+    let mut refs: Vec<u32> = Vec::new();
+    let mut cursor = 0;
+    while let Some(found) = text[cursor..].find("[Image #") {
+        let start = cursor + found + "[Image #".len();
+        if let Some(end_offset) = text[start..].find(']') {
+            if let Ok(number) = text[start..start + end_offset].parse::<u32>() {
+                refs.push(number);
+            }
+            cursor = start + end_offset + 1;
+        } else {
+            break;
+        }
+    }
+    let extras_base = refs.iter().copied().max().unwrap_or(0);
+    let mut images = Vec::new();
+    for (index, block) in image_blocks.iter().enumerate() {
+        let source = match block.get("source") {
+            Some(source) => source,
+            None => continue,
+        };
+        let media_type = source
+            .get("media_type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("image/png");
+        let data = match source.get("data").and_then(|value| value.as_str()) {
+            Some(data) => data,
+            None => continue,
+        };
+        let number = refs.get(index).copied().unwrap_or(extras_base + index as u32 + 1);
+        images.push(MessageImage {
+            number,
+            data_url: format!("data:{};base64,{}", media_type, data),
+        });
+    }
+    images
+}
+
+/// Normalize message text for dedup (collapse whitespace + lowercase).
+fn normalize_for_dedup(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Pre-pass: normalized text of every ordinary user message. A queued message is
+/// sometimes stored BOTH as a `queued_command` attachment AND as a normal user
+/// turn — this lets us skip the attachment copy so it isn't shown twice.
+fn collect_normal_user_texts(path: &Path) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return set,
+    };
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if !line.contains("\"type\":\"user\"") {
+            continue;
+        }
+        let entry: JsonlEntry = match serde_json::from_str(&line) {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if entry.is_meta.unwrap_or(false) || entry.tool_use_result.is_some() {
+            continue;
+        }
+        if is_tool_result_content(&entry.message) {
+            continue;
+        }
+        let cleaned = strip_system_tags(&extract_user_text(&entry.message));
+        let normalized = normalize_for_dedup(&cleaned);
+        if !normalized.is_empty() {
+            set.insert(normalized);
+        }
+    }
+    set
+}
+
+/// Emit an `agent-notification` card for a parsed `<task-notification>`, unless an
+/// identical one was already emitted. The same notification can arrive through two
+/// channels — a delivered `user` entry and a queued `attachment` (when the agent
+/// finished while Claude was mid-turn) — so both handlers dedupe against a shared
+/// set keyed on the notification's content. Two genuinely different notifications
+/// (an agent that stopped, resumed, and stopped again with a new result) differ in
+/// content and both survive. Returns true when a card was pushed.
+fn push_task_notification(
+    notification: AgentNotification,
+    timestamp: String,
+    messages: &mut Vec<ConversationMessage>,
+    current_assistant_text: &mut String,
+    current_assistant_timestamp: &mut str,
+    in_assistant_turn: &mut bool,
+    seen_task_notifications: &mut std::collections::HashSet<String>,
+) -> bool {
+    let dedup_key = format!(
+        "{}\u{1}{}\u{1}{}",
+        notification.summary, notification.status, notification.result
+    );
+    if !seen_task_notifications.insert(dedup_key) {
+        return false;
+    }
+    flush_assistant(messages, current_assistant_text, current_assistant_timestamp, in_assistant_turn);
+    messages.push(ConversationMessage {
+        role: "agent-notification".to_string(),
+        text: notification.summary.clone(),
+        timestamp,
+        images: Vec::new(),
+        interrupted: false,
+        mid_turn: false,
+        notification: Some(notification),
+    });
+    true
+}
+
+/// Surface a `queued_command` attachment — a message the user queued while Claude
+/// was still working. Claude Code stores it as an attachment rather than a normal
+/// user turn, so without this it never appears (and can't be searched). Tagged as
+/// mid-turn, since it was sent while Claude was mid-response. Skipped when the same
+/// message also exists as a normal user turn (avoids a duplicate). A queued entry
+/// can also be a background-agent task-notification, which is surfaced as an agent
+/// card (deduped) rather than a user bubble.
+fn process_attachment_entry(
+    entry: JsonlEntry,
+    messages: &mut Vec<ConversationMessage>,
+    current_assistant_text: &mut String,
+    current_assistant_timestamp: &mut str,
+    in_assistant_turn: &mut bool,
+    normal_user_texts: &std::collections::HashSet<String>,
+    seen_task_notifications: &mut std::collections::HashSet<String>,
+) {
+    let attachment = match &entry.attachment {
+        Some(attachment) => attachment,
+        None => return,
+    };
+    if attachment.get("type").and_then(|kind| kind.as_str()) != Some("queued_command") {
+        return;
+    }
+    // `prompt` is usually a bare string, but can be a [{type:text/image}] array
+    // when the queued message included pasted images.
+    let (text, images) = match attachment.get("prompt") {
+        Some(Value::String(prompt_text)) => (prompt_text.clone(), Vec::new()),
+        Some(Value::Array(parts)) => {
+            let mut text = String::new();
+            for part in parts {
+                if part.get("type").and_then(|kind| kind.as_str()) == Some("text") {
+                    if let Some(part_text) = part.get("text").and_then(|value| value.as_str()) {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(part_text);
+                    }
+                }
+            }
+            let images = attachment_images(parts, &text);
+            (text, images)
+        }
+        _ => return,
+    };
+    // A queued task-notification: a background agent finished mid-turn. Surface it
+    // as an agent card (deduped), not a queued user bubble.
+    if let Some(notification) = parse_task_notification(&text) {
+        push_task_notification(
+            notification,
+            entry.timestamp.unwrap_or_default(),
+            messages,
+            current_assistant_text,
+            current_assistant_timestamp,
+            in_assistant_turn,
+            seen_task_notifications,
+        );
+        return;
+    }
+    let cleaned = strip_system_tags(&text);
+    if cleaned.is_empty() && images.is_empty() {
+        return;
+    }
+    // Already shown as a normal user turn — don't duplicate it.
+    if normal_user_texts.contains(&normalize_for_dedup(&cleaned)) {
+        return;
+    }
+    flush_assistant(messages, current_assistant_text, current_assistant_timestamp, in_assistant_turn);
+    messages.push(ConversationMessage {
+        role: "user".to_string(),
+        text: cleaned,
+        timestamp: entry.timestamp.unwrap_or_default(),
+        images,
+        interrupted: false,
+        mid_turn: true,
+        notification: None,
+    });
+}
+
 fn process_user_entry(
     entry: JsonlEntry,
     messages: &mut Vec<ConversationMessage>,
     current_assistant_text: &mut String,
     current_assistant_timestamp: &mut str,
     in_assistant_turn: &mut bool,
+    interrupt_active: &mut bool,
+    seen_task_notifications: &mut std::collections::HashSet<String>,
 ) {
     // Compaction summaries are special
     if entry.is_compact_summary.unwrap_or(false) {
         flush_assistant(messages, current_assistant_text, current_assistant_timestamp, in_assistant_turn);
+        *interrupt_active = false;
         let text = extract_user_text(&entry.message);
         if !text.is_empty() {
             messages.push(ConversationMessage {
@@ -1702,6 +2644,9 @@ fn process_user_entry(
                 text,
                 timestamp: entry.timestamp.unwrap_or_default(),
                 images: Vec::new(),
+                interrupted: false,
+                mid_turn: false,
+                notification: None,
             });
         }
         return;
@@ -1716,6 +2661,42 @@ fn process_user_entry(
     }
 
     let text = extract_user_text(&entry.message);
+
+    // Interrupt marker: this isn't a real user message — it's the synthetic record
+    // of the user pressing Esc. Flush the assistant reply that was in flight and
+    // tag it as interrupted, then arm `interrupt_active` so the user's actual
+    // follow-up message(s) get flagged as mid-turn. The marker itself is dropped.
+    if is_interrupt_marker(&text) {
+        let before = messages.len();
+        flush_assistant(messages, current_assistant_text, current_assistant_timestamp, in_assistant_turn);
+        if messages.len() > before {
+            if let Some(last) = messages.last_mut() {
+                if last.role == "assistant" {
+                    last.interrupted = true;
+                }
+            }
+        }
+        *interrupt_active = true;
+        return;
+    }
+
+    // Task notification: a background subagent / workflow agent finished. Claude
+    // Code injects this as a `user`-role entry, but the user didn't type it — it's
+    // a system event. Surface it as its own `agent-notification` card instead of a
+    // user bubble, so the agent's output doesn't masquerade as a message the user sent.
+    if let Some(notification) = parse_task_notification(&text) {
+        push_task_notification(
+            notification,
+            entry.timestamp.unwrap_or_default(),
+            messages,
+            current_assistant_text,
+            current_assistant_timestamp,
+            in_assistant_turn,
+            seen_task_notifications,
+        );
+        return;
+    }
+
     let cleaned = strip_system_tags(&text);
     let images = extract_user_images(&entry.message, &cleaned);
 
@@ -1730,6 +2711,9 @@ fn process_user_entry(
         text: cleaned,
         timestamp: entry.timestamp.unwrap_or_default(),
         images,
+        interrupted: false,
+        mid_turn: *interrupt_active,
+        notification: None,
     });
 }
 
@@ -1745,6 +2729,9 @@ fn flush_assistant(
             text: current_text.clone(),
             timestamp: current_timestamp.to_string(),
             images: Vec::new(),
+            interrupted: false,
+            mid_turn: false,
+            notification: None,
         });
         current_text.clear();
         *in_turn = false;
@@ -1884,6 +2871,43 @@ fn reconstruct_slash_command(text: &str) -> Option<String> {
     } else {
         Some(format!("{} {}", name, args))
     }
+}
+
+/// Parse a `<task-notification>` transcript entry into an `AgentNotification`.
+/// Returns None when `text` isn't one. A single wrapper covers all variants:
+/// single subagents (usage = subagent_tokens/tool_uses/duration_ms), dynamic
+/// workflows, and multi-agent fan-outs (agent_count/agents_done/agents_error).
+fn parse_task_notification(text: &str) -> Option<AgentNotification> {
+    if !text.trim_start().starts_with("<task-notification>") {
+        return None;
+    }
+    let parse_u64 =
+        |tag: &str| extract_tag_inner(text, tag).and_then(|value| value.trim().parse::<u64>().ok());
+    Some(AgentNotification {
+        summary: extract_tag_inner(text, "summary").unwrap_or_default().trim().to_string(),
+        status: extract_tag_inner(text, "status").unwrap_or_default().trim().to_string(),
+        result: extract_tag_inner(text, "result")
+            .map(|body| decode_xml_entities(body.trim()))
+            .unwrap_or_default(),
+        tokens: parse_u64("subagent_tokens"),
+        tool_uses: parse_u64("tool_uses"),
+        duration_ms: parse_u64("duration_ms"),
+        agent_count: parse_u64("agent_count"),
+        agents_done: parse_u64("agents_done"),
+        agents_error: parse_u64("agents_error"),
+    })
+}
+
+/// Decode the small set of XML entities Claude Code escapes inside stored
+/// `<result>` bodies so they read naturally. `&amp;` is decoded last so a
+/// double-escaped `&amp;lt;` resolves to `&lt;`, not `<`. Rendered as plain text
+/// (the frontend re-escapes on display), so this is display sugar, not a parser.
+fn decode_xml_entities(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
 }
 
 /// Return the inner text of the first `<tag>...</tag>` pair, or None if not present
@@ -2417,6 +3441,76 @@ mod tests {
     }
 
     #[test]
+    fn task_notification_is_parsed_into_agent_card() {
+        let input = "<task-notification>\n<task-id>ac7c715edf413a68a</task-id>\n<status>completed</status>\n<summary>Agent \"Map domain model\" finished</summary>\n<result>Report body with &lt;Entity&gt; refs &amp; more.</result>\n<usage><subagent_tokens>122641</subagent_tokens><tool_uses>72</tool_uses><duration_ms>267945</duration_ms></usage>\n</task-notification>";
+        let notification = parse_task_notification(input).expect("should parse");
+        assert_eq!(notification.summary, "Agent \"Map domain model\" finished");
+        assert_eq!(notification.status, "completed");
+        assert_eq!(notification.result, "Report body with <Entity> refs & more.");
+        assert_eq!(notification.tokens, Some(122641));
+        assert_eq!(notification.tool_uses, Some(72));
+        assert_eq!(notification.duration_ms, Some(267945));
+    }
+
+    #[test]
+    fn non_task_notification_text_is_ignored() {
+        assert!(parse_task_notification("just a normal user message").is_none());
+        assert!(parse_task_notification("mentions <task-notification> mid-sentence only").is_none());
+    }
+
+    #[test]
+    fn double_escaped_entity_decodes_to_single() {
+        // `&amp;lt;` must resolve to the literal `&lt;`, not to `<`.
+        assert_eq!(decode_xml_entities("&amp;lt;"), "&lt;");
+    }
+
+    fn note_card(summary: &str, status: &str, result: &str) -> AgentNotification {
+        AgentNotification {
+            summary: summary.to_string(),
+            status: status.to_string(),
+            result: result.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn identical_task_notifications_dedupe_to_one_card() {
+        // The same notification arrives as both a delivered `user` entry and a
+        // queued `attachment`; only one card should result.
+        let mut messages = Vec::new();
+        let (mut text, mut timestamp, mut in_turn) = (String::new(), String::new(), false);
+        let mut seen = std::collections::HashSet::new();
+        let pushed_first = push_task_notification(
+            note_card("Agent \"X\" finished", "completed", "body"),
+            "t1".to_string(), &mut messages, &mut text, &mut timestamp, &mut in_turn, &mut seen,
+        );
+        let pushed_second = push_task_notification(
+            note_card("Agent \"X\" finished", "completed", "body"),
+            "t2".to_string(), &mut messages, &mut text, &mut timestamp, &mut in_turn, &mut seen,
+        );
+        assert!(pushed_first);
+        assert!(!pushed_second);
+        assert_eq!(messages.iter().filter(|message| message.role == "agent-notification").count(), 1);
+    }
+
+    #[test]
+    fn task_notifications_with_different_content_both_survive() {
+        // A task-id that notifies twice with a different result is two real events.
+        let mut messages = Vec::new();
+        let (mut text, mut timestamp, mut in_turn) = (String::new(), String::new(), false);
+        let mut seen = std::collections::HashSet::new();
+        push_task_notification(
+            note_card("Agent \"X\" finished", "completed", "first run"),
+            "t1".to_string(), &mut messages, &mut text, &mut timestamp, &mut in_turn, &mut seen,
+        );
+        push_task_notification(
+            note_card("Agent \"X\" finished", "completed", "second run"),
+            "t2".to_string(), &mut messages, &mut text, &mut timestamp, &mut in_turn, &mut seen,
+        );
+        assert_eq!(messages.iter().filter(|message| message.role == "agent-notification").count(), 2);
+    }
+
+    #[test]
     fn workflow_label_prefers_meta_name() {
         let script = "export const meta = {\n  name: 'canvas-restructure-audit',\n  description: 'Audit the Canvas module',\n}";
         let input = serde_json::json!({ "script": script });
@@ -2437,5 +3531,279 @@ mod tests {
         assert!(out.contains("Important user content that is quite long"), "got: {out:?}");
         assert!(out.contains("oops no close tag here"), "got: {out:?}");
     }
-}
 
+    #[test]
+    fn interrupt_marker_is_recognised_in_both_shapes() {
+        assert!(is_interrupt_marker("[Request interrupted by user]"));
+        assert!(is_interrupt_marker("  [Request interrupted by user for tool use]  "));
+        assert!(!is_interrupt_marker("please don't interrupt the build"));
+        assert!(!is_interrupt_marker(
+            "here is why [Request interrupted by user] happened"
+        ));
+    }
+
+    #[test]
+    fn mid_turn_interrupt_sequence_is_parsed() {
+        // Reproduces a real Esc-mid-response sequence: a partial assistant reply,
+        // the synthetic interrupt marker (as a text-block list), then two follow-up
+        // user messages fired before Claude resumed, then a resumed assistant turn
+        // followed by an ordinary user message.
+        let lines = [
+            r#"{"type":"assistant","requestId":"req_a","timestamp":"2026-08-11T11:40:08.663Z","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"Here is the design language I need to match"}]}}"#,
+            r#"{"type":"user","timestamp":"2026-08-11T11:40:08.664Z","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#,
+            r#"{"type":"user","timestamp":"2026-08-11T11:40:08.683Z","message":{"role":"user","content":"think from the user's perspective and add the styles"}}"#,
+            r#"{"type":"user","timestamp":"2026-08-11T11:40:08.684Z","message":{"role":"user","content":"without heavy things also"}}"#,
+            r#"{"type":"assistant","requestId":"req_b","timestamp":"2026-08-11T11:41:00.000Z","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"Got it — reworking the styles now."}]}}"#,
+            r#"{"type":"user","timestamp":"2026-08-11T11:42:00.000Z","message":{"role":"user","content":"looks great, ship it"}}"#,
+        ];
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("claude_sessions_interrupt_test_{}.jsonl", std::process::id()));
+        fs::write(&path, lines.join("\n")).unwrap();
+
+        let messages = get_session_messages(path.to_string_lossy().to_string()).unwrap();
+        let _ = fs::remove_file(&path);
+
+        // The raw "[Request interrupted by user]" marker must never surface as a bubble.
+        assert!(
+            !messages.iter().any(|m| m.text.contains("[Request interrupted by user]")),
+            "marker leaked into output: {messages:#?}"
+        );
+
+        let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["assistant", "user", "user", "assistant", "user"],
+            "unexpected message sequence: {messages:#?}"
+        );
+
+        // The cut-off assistant reply is flagged interrupted; the resumed one is not.
+        assert!(messages[0].interrupted, "first assistant reply should be interrupted");
+        assert!(!messages[3].interrupted, "resumed assistant reply should not be interrupted");
+
+        // Both follow-up user messages are mid-turn; the later normal one is not.
+        assert!(messages[1].mid_turn, "first follow-up should be mid_turn");
+        assert!(messages[2].mid_turn, "second follow-up should be mid_turn");
+        assert!(!messages[4].mid_turn, "post-resume user message should not be mid_turn");
+    }
+
+    #[test]
+    fn askuserquestion_answer_is_parsed_with_chosen_option() {
+        // Mirrors a real toolUseResult: questions + options + an `answers` map.
+        let tool_use_result = serde_json::json!({
+            "questions": [{
+                "question": "Which direction should we take?",
+                "header": "Direction",
+                "multiSelect": false,
+                "options": [
+                    { "label": "Option A", "description": "the first path" },
+                    { "label": "Option B", "description": "the second path" }
+                ]
+            }],
+            "answers": { "Which direction should we take?": "Option B" }
+        });
+
+        let questions = tool_use_result["questions"].as_array().unwrap();
+        let parsed = parse_answered_questions(
+            questions,
+            tool_use_result.get("answers"),
+            tool_use_result.get("annotations"),
+        );
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].header, "Direction");
+        assert!(parsed[0].notes.is_none());
+        assert!(!parsed[0].multi_select);
+        let chosen: Vec<&str> = parsed[0]
+            .options
+            .iter()
+            .filter(|option| option.chosen)
+            .map(|option| option.label.as_str())
+            .collect();
+        assert_eq!(chosen, ["Option B"], "only the picked option is chosen");
+        assert!(parsed[0].options.iter().all(|option| !option.custom));
+    }
+
+    #[test]
+    fn askuserquestion_custom_other_answer_is_surfaced() {
+        // The user picked "Other" and typed text that matches no offered label.
+        let tool_use_result = serde_json::json!({
+            "questions": [{
+                "question": "Pick a colour",
+                "header": "Colour",
+                "multiSelect": false,
+                "options": [{ "label": "Red", "description": "" }]
+            }],
+            "answers": { "Pick a colour": "Chartreuse, actually" }
+        });
+        let questions = tool_use_result["questions"].as_array().unwrap();
+        let parsed = parse_answered_questions(
+            questions,
+            tool_use_result.get("answers"),
+            tool_use_result.get("annotations"),
+        );
+
+        let custom: Vec<&AnsweredOption> =
+            parsed[0].options.iter().filter(|option| option.custom).collect();
+        assert_eq!(custom.len(), 1);
+        assert_eq!(custom[0].label, "Chartreuse, actually");
+        assert!(custom[0].chosen);
+        // The offered "Red" option remains, unchosen.
+        assert!(parsed[0].options.iter().any(|option| option.label == "Red" && !option.chosen));
+    }
+
+    #[test]
+    fn multiselect_answers_and_per_question_notes_are_parsed() {
+        // Two questions: one multi-select with two chosen, one note-only (no option
+        // picked — the note is the whole answer, like the real theme question).
+        let tool_use_result = serde_json::json!({
+            "questions": [
+                {
+                    "question": "Which features to enable?",
+                    "header": "Features",
+                    "multiSelect": true,
+                    "options": [
+                        { "label": "Search", "description": "" },
+                        { "label": "Bookmarks", "description": "" },
+                        { "label": "Export", "description": "" }
+                    ]
+                },
+                {
+                    "question": "Anything else?",
+                    "header": "Notes",
+                    "multiSelect": false,
+                    "options": [{ "label": "Nope", "description": "" }]
+                }
+            ],
+            // Real multi-select format: chosen labels joined as one "A, B" string.
+            "answers": { "Which features to enable?": "Search, Export" },
+            "annotations": { "Anything else?": { "notes": "please also add tags" } }
+        });
+        let questions = tool_use_result["questions"].as_array().unwrap();
+        let parsed = parse_answered_questions(
+            questions,
+            tool_use_result.get("answers"),
+            tool_use_result.get("annotations"),
+        );
+
+        assert_eq!(parsed.len(), 2);
+        // Q1: multi-select, both Search + Export chosen, Bookmarks not.
+        assert!(parsed[0].multi_select);
+        let chosen: Vec<&str> = parsed[0]
+            .options
+            .iter()
+            .filter(|option| option.chosen)
+            .map(|option| option.label.as_str())
+            .collect();
+        assert_eq!(chosen, ["Search", "Export"]);
+        assert!(parsed[0].notes.is_none());
+        // Q2: no option chosen, but the note carries the real answer.
+        assert!(parsed[1].options.iter().all(|option| !option.chosen));
+        assert_eq!(parsed[1].notes.as_deref(), Some("please also add tags"));
+    }
+
+    #[test]
+    fn published_artifact_is_extracted_by_tool_use_id() {
+        // Mirrors a real Artifact publish: tool_use (Artifact) + a tool_result whose
+        // toolUseResult carries {url, path, title}.
+        let lines = [
+            r#"{"type":"assistant","timestamp":"2026-08-12T10:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_art1","name":"Artifact","input":{"file_path":"/tmp/showcase.html"}}]}}"#,
+            r#"{"type":"user","timestamp":"2026-08-12T10:00:01Z","toolUseResult":{"url":"https://claude.ai/code/artifact/ea746622-54d5-4f18-974c-935af34e4e85","path":"/tmp/showcase.html","title":"Signal Showcase"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_art1","content":"Published /tmp/showcase.html at https://claude.ai/code/artifact/ea746622-54d5-4f18-974c-935af34e4e85"}]}}"#,
+        ];
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("claude_sessions_artifact_test_{}.jsonl", std::process::id()));
+        fs::write(&path, lines.join("\n")).unwrap();
+
+        let artifacts = get_session_artifacts(path.to_string_lossy().to_string()).unwrap();
+        let _ = fs::remove_file(&path);
+
+        let artifact = artifacts.get("toolu_art1").expect("artifact keyed by tool_use_id");
+        assert_eq!(artifact.title, "Signal Showcase");
+        assert!(artifact.url.contains("/code/artifact/ea746622"));
+        assert_eq!(artifact.path, "/tmp/showcase.html");
+    }
+
+    #[test]
+    fn queued_command_attachment_is_surfaced_as_mid_turn() {
+        // A message the user queued while Claude was working: stored as an
+        // `attachment` of type queued_command, not a normal user turn. Mirrors the
+        // real shape (the "branch feature" message). It must appear + be mid_turn.
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-08-12T05:00:00Z","message":{"role":"user","content":"kick off the task"}}"#,
+            r#"{"type":"assistant","requestId":"req_a","timestamp":"2026-08-12T05:10:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Working on it."}]}}"#,
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-12T05:26:36Z","content":"And one more feature — branch support"}"#,
+            // array-prompt form (queued message with a pasted image)
+            r#"{"type":"attachment","isSidechain":false,"timestamp":"2026-08-12T05:26:49Z","attachment":{"type":"queued_command","prompt":[{"type":"text","text":"And one more important feature — branch support"}]}}"#,
+            // string-prompt form (the common case — 94% of queued messages)
+            r#"{"type":"attachment","isSidechain":false,"timestamp":"2026-08-12T05:27:10Z","attachment":{"type":"queued_command","prompt":"also make the quality full, not dimmed"}}"#,
+            // a non-message attachment that must be ignored
+            r#"{"type":"attachment","isSidechain":false,"timestamp":"2026-08-12T05:27:20Z","attachment":{"type":"task_reminder","content":[],"itemCount":0}}"#,
+            // DEDUP case: queued as BOTH a normal user turn AND an attachment — show once
+            r#"{"type":"user","timestamp":"2026-08-12T05:28:00Z","message":{"role":"user","content":"and please add a dark theme toggle"}}"#,
+            r#"{"type":"attachment","isSidechain":false,"timestamp":"2026-08-12T05:28:01Z","attachment":{"type":"queued_command","prompt":"and please add a dark theme toggle"}}"#,
+        ];
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cs_queued_test_{}.jsonl", std::process::id()));
+        fs::write(&path, lines.join("\n")).unwrap();
+
+        let messages = get_session_messages(path.to_string_lossy().to_string()).unwrap();
+        let _ = fs::remove_file(&path);
+
+        // Both the array-prompt and string-prompt queued messages are surfaced + mid_turn.
+        let array_msg = messages.iter().find(|m| m.text.contains("branch support")).expect("array-prompt queued message");
+        assert_eq!(array_msg.role, "user");
+        assert!(array_msg.mid_turn);
+        let string_msg = messages.iter().find(|m| m.text.contains("full, not dimmed")).expect("string-prompt queued message");
+        assert!(string_msg.mid_turn, "string-prompt queued message should be mid_turn");
+        // No duplication from the queue-operation bookkeeping entry.
+        assert_eq!(messages.iter().filter(|m| m.text.contains("branch support")).count(), 1);
+        // The task_reminder attachment must NOT become a message.
+        assert!(!messages.iter().any(|m| m.text.contains("itemCount")));
+        // Dedup: the message stored as BOTH a user turn and an attachment appears once.
+        assert_eq!(
+            messages.iter().filter(|m| m.text.contains("dark theme toggle")).count(),
+            1,
+            "a queued message stored as both a user turn and an attachment must not duplicate"
+        );
+    }
+
+    #[test]
+    fn archive_copies_transcript_subagents_and_meta_in_mirrored_layout() {
+        let session_id = format!("sess-{}", std::process::id());
+        let base = std::env::temp_dir().join(format!("cs_archive_test_{}", std::process::id()));
+        let live_project = base.join("live");
+        let archive_root = base.join("archive");
+        // Live layout: <project>/<id>.jsonl + <project>/<id>/subagents/agent-*.jsonl
+        fs::create_dir_all(live_project.join(&session_id).join("subagents")).unwrap();
+        let source_jsonl = live_project.join(format!("{}.jsonl", session_id));
+        fs::write(&source_jsonl, "{\"type\":\"user\"}\n").unwrap();
+        fs::write(
+            live_project.join(&session_id).join("subagents").join("agent-x.jsonl"),
+            "{\"isSidechain\":true}\n",
+        )
+        .unwrap();
+
+        let meta = serde_json::json!({ "session_id": session_id, "title": "Test" });
+        archive_session_to(&archive_root, &source_jsonl, &session_id, None, &meta).unwrap();
+
+        // Mirrored layout: <archive>/<id>/<id>.jsonl and .../<id>/subagents/agent-x.jsonl
+        let archived_jsonl = archive_root.join(&session_id).join(format!("{}.jsonl", session_id));
+        let archived_agent = archive_root
+            .join(&session_id)
+            .join(&session_id)
+            .join("subagents")
+            .join("agent-x.jsonl");
+        let archived_meta = archive_root.join(&session_id).join("meta.json");
+
+        assert!(archived_jsonl.exists(), "transcript should be archived");
+        assert!(archived_agent.exists(), "subagent log should be archived");
+        assert!(archived_meta.exists(), "meta.json should be written");
+        // Subagent path derivation (parentDir + <id> + subagents) resolves inside the archive.
+        assert_eq!(
+            archived_jsonl.parent().unwrap().join(&session_id).join("subagents").join("agent-x.jsonl"),
+            archived_agent
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+}

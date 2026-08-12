@@ -10,6 +10,7 @@
     sortOrder = "newest",
     onSortChange,
     tokenMap = new Map(),
+    savedSessionIds = new Set(),
   }: {
     sessions: SessionInfo[];
     selectedSessionId: string | null;
@@ -17,6 +18,8 @@
     sortOrder: "newest" | "oldest";
     onSortChange: (order: "newest" | "oldest") => void;
     tokenMap?: Map<string, number>;
+    // Ids of sessions with a local archived copy — shown with a "saved" pin.
+    savedSessionIds?: Set<string>;
   } = $props();
 
   let searchQuery = $state("");
@@ -252,7 +255,33 @@
           class:selected={selectedSessionId === session.session_id}
           onclick={() => onSelect(session)}
         >
-          <div class="session-name">{displayName(session)}</div>
+          <div class="session-name-row">
+            <div class="session-name">{displayName(session)}</div>
+            {#if savedSessionIds.has(session.session_id)}
+              <svg class="saved-pin" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" aria-label="Saved"><title>Saved — kept on your machine</title><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+            {/if}
+          </div>
+          {#if session.forked_from_session_id}
+            {@const parent = sessions.find((entry) => entry.session_id === session.forked_from_session_id)}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <span
+              class="fork-badge"
+              class:fork-linked={!!parent}
+              title={parent
+                ? `Forked from "${displayName(parent)}" — click to open it`
+                : "Forked from another session (parent not in this project)"}
+              onclick={(event) => {
+                if (parent) {
+                  event.stopPropagation();
+                  onSelect(parent);
+                }
+              }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+              <span class="fork-label">forked from</span><span class="fork-parent">{parent ? displayName(parent) : "a session"}</span>
+            </span>
+          {/if}
           <div class="session-meta">
             {#if session.conversation_count > 0}
               <span class="stat-badge" title="Conversations">
@@ -288,7 +317,7 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    background: #1a1a2e;
+    background: var(--bg-sidebar);
   }
 
   .session-list-header {
@@ -296,7 +325,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 16px;
-    border-bottom: 1px solid #2a2a4a;
+    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
 
@@ -304,7 +333,7 @@
     margin: 0;
     font-size: 14px;
     font-weight: 600;
-    color: #e0e0e0;
+    color: var(--text-primary);
     letter-spacing: 0.5px;
     text-transform: uppercase;
   }
@@ -316,9 +345,9 @@
   }
 
   .sort-btn {
-    background: #2a2a4a;
+    background: var(--border);
     border: none;
-    color: #a0a0c0;
+    color: var(--text-secondary);
     font-size: 11px;
     padding: 4px 10px;
     border-radius: 4px;
@@ -326,8 +355,8 @@
   }
 
   .sort-btn:hover {
-    background: #3a3a5a;
-    color: #e0e0e0;
+    background: var(--border-strong);
+    color: var(--text-primary);
   }
 
   .search-bar {
@@ -337,9 +366,9 @@
 
   .search-bar input {
     width: 100%;
-    background: #12121e;
-    border: 1px solid #2a2a4a;
-    color: #e0e0e0;
+    background: var(--bg-app);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
     padding: 8px 12px;
     border-radius: 6px;
     font-size: 13px;
@@ -348,11 +377,11 @@
   }
 
   .search-bar input:focus {
-    border-color: #6366f1;
+    border-color: var(--accent);
   }
 
   .search-bar input::placeholder {
-    color: #5a5a7a;
+    color: var(--text-faint);
   }
 
   .sessions-scroll {
@@ -368,17 +397,17 @@
     gap: 8px;
     font-size: 10px;
     font-weight: 600;
-    color: #5a5a7a;
+    color: var(--text-faint);
     letter-spacing: 0.08em;
     padding: 8px 12px 6px;
     margin-top: 12px;
-    border-top: 1px solid #222240;
+    border-top: 1px solid var(--bg-hover);
     text-transform: uppercase;
   }
 
   .group-count {
     font-weight: 500;
-    color: #3a3a5a;
+    color: var(--border-strong);
     letter-spacing: 0;
     text-transform: none;
     font-size: 10px;
@@ -395,7 +424,7 @@
     text-align: left;
     background: transparent;
     border: none;
-    color: #c0c0d8;
+    color: var(--text-secondary);
     padding: 11px 12px;
     margin: 1px 0;
     border-radius: 8px;
@@ -409,17 +438,70 @@
 
   .session-item.selected {
     background: rgba(99, 102, 241, 0.12);
-    box-shadow: inset 3px 0 0 0 #6366f1;
+    box-shadow: inset 3px 0 0 0 var(--accent);
   }
 
   .session-item.selected .session-name {
-    color: #ececff;
+    color: var(--text-primary);
+  }
+
+  .session-name-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .session-name-row .session-name {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .saved-pin {
+    flex-shrink: 0;
+    margin-top: 2px;
+    color: #f4bf5f;
+  }
+
+  /* Subtle "forked from …" subtitle — no filled box, GitHub-style. */
+  .fork-badge {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    margin: 4px 0 0;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .fork-badge svg {
+    flex-shrink: 0;
+    opacity: 0.65;
+  }
+
+  .fork-label {
+    flex-shrink: 0;
+  }
+
+  .fork-parent {
+    font-weight: 500;
+    color: var(--accent-hover);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .fork-linked {
+    cursor: pointer;
+  }
+
+  .fork-linked:hover .fork-parent {
+    text-decoration: underline;
   }
 
   .session-name {
     font-size: 13px;
     font-weight: 600;
-    color: #d8d8f0;
+    color: var(--text-primary);
     line-height: 1.35;
     margin-bottom: 4px;
     display: -webkit-box;
@@ -437,7 +519,7 @@
 
   .stat-badge {
     font-size: 11px;
-    color: #585878;
+    color: var(--text-faint);
     display: flex;
     align-items: center;
     gap: 4px;
@@ -449,7 +531,7 @@
 
   .session-date {
     font-size: 11px;
-    color: #505070;
+    color: var(--border-strong);
     margin-left: auto;
     line-height: 1;
   }
@@ -457,7 +539,7 @@
   .empty-state {
     padding: 40px 16px;
     text-align: center;
-    color: #5a5a7a;
+    color: var(--text-faint);
     font-size: 13px;
   }
 
@@ -476,6 +558,6 @@
   }
 
   .sessions-scroll:hover::-webkit-scrollbar-thumb {
-    background: #2a2a4a;
+    background: var(--border);
   }
 </style>

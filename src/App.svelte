@@ -15,7 +15,9 @@
   import ShortcutsOverlay from "./lib/ShortcutsOverlay.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
   import BookmarksView from "./lib/BookmarksView.svelte";
+  import WelcomeModal from "./lib/WelcomeModal.svelte";
   import { bookmarks } from "./lib/bookmarks.svelte";
+  import { preferences, cycleTheme, dismissWelcome } from "./lib/preferences.svelte";
 
   let projects: ProjectInfo[] = $state([]);
   let selectedProject: ProjectInfo | null = $state(null);
@@ -35,6 +37,75 @@
   let sortedSessions = $derived(
     sortOrder === "newest" ? sessions : [...sessions].reverse()
   );
+
+  // The parent session the selected one was forked from (if any + still present),
+  // so ConversationView can show a clickable "Forked from …" chip in its header.
+  let forkParent = $derived(
+    selectedSession?.forked_from_session_id
+      ? sessions.find(
+          (entry) => entry.session_id === selectedSession!.forked_from_session_id
+        ) ?? null
+      : null
+  );
+
+  // Saved (archived) sessions — ids of sessions that have a local archived copy so
+  // they survive Claude Code's 30-day cleanup.
+  let archivedSessionIds: Set<string> = $state(new Set());
+
+  async function loadArchivedIds() {
+    try {
+      const ids = await invoke<string[]>("get_archived_session_ids");
+      archivedSessionIds = new Set(ids);
+    } catch {
+      // Archive is optional — ignore failures.
+    }
+  }
+
+  let selectedSessionSaved = $derived(
+    selectedSession ? archivedSessionIds.has(selectedSession.session_id) : false
+  );
+  // A saved session is "locked" (can't be un-saved) while bookmarks depend on it,
+  // otherwise removing it would re-break those bookmarks.
+  let selectedSaveLocked = $derived(
+    selectedSessionSaved &&
+      !!selectedSession &&
+      bookmarks.some((entry) => entry.session_id === selectedSession!.session_id)
+  );
+
+  async function toggleSaveSelectedSession() {
+    const session = selectedSession;
+    if (!session) return;
+    const sessionId = session.session_id;
+
+    if (archivedSessionIds.has(sessionId)) {
+      // Keep it if a bookmark still relies on this archived copy.
+      if (bookmarks.some((entry) => entry.session_id === sessionId)) return;
+      try {
+        await invoke("unarchive_session", { sessionId });
+        const next = new Set(archivedSessionIds);
+        next.delete(sessionId);
+        archivedSessionIds = next;
+      } catch (unsaveError) {
+        console.error("Failed to remove saved session:", unsaveError);
+      }
+      return;
+    }
+
+    try {
+      await invoke("archive_session", {
+        jsonlPath: session.jsonl_path,
+        sessionId,
+        projectPath: session.project_path,
+        projectName: session.project_name,
+        title: session.custom_title || session.summary || session.ai_title || null,
+      });
+      const next = new Set(archivedSessionIds);
+      next.add(sessionId);
+      archivedSessionIds = next;
+    } catch (saveError) {
+      console.error("Failed to save session:", saveError);
+    }
+  }
 
   async function loadProjects() {
     try {
@@ -127,6 +198,8 @@
             { jsonlPath: updatedSession.jsonl_path }
           );
           messages = updatedMessages;
+          // Refresh keeps the saved copy current with the latest transcript.
+          refreshArchiveIfSaved(updatedSession);
         }
       }
     } catch (refreshError) {
@@ -134,6 +207,22 @@
     } finally {
       refreshing = false;
     }
+  }
+
+  // Keep a saved session's disk copy fresh: if it's archived and the live file has
+  // grown since we saved it, re-copy it. archive_session only rewrites when the
+  // source is newer, and no-ops if the live file has already expired.
+  function refreshArchiveIfSaved(session: SessionInfo) {
+    if (!archivedSessionIds.has(session.session_id)) return;
+    invoke("archive_session", {
+      jsonlPath: session.jsonl_path,
+      sessionId: session.session_id,
+      projectPath: session.project_path,
+      projectName: session.project_name,
+      title: session.custom_title || session.summary || session.ai_title || null,
+    }).catch(() => {
+      // Live file gone (expired) — fine, the archive is what we read from.
+    });
   }
 
   async function selectSession(session: SessionInfo, scrollTimestamp: string | null = null) {
@@ -151,6 +240,8 @@
     } finally {
       loadingMessages = false;
     }
+    // A saved session you keep working in shouldn't drift stale on disk.
+    refreshArchiveIfSaved(session);
   }
 
   // Navigate from a bookmark: open its project + session and scroll to the message.
@@ -172,6 +263,37 @@
     const targetSession = sessions.find((entry) => entry.session_id === bookmark.session_id);
     if (targetSession) {
       await selectSession(targetSession, bookmark.timestamp);
+      return;
+    }
+
+    // The live session is gone (Claude Code's 30-day cleanup). If we archived it
+    // when the bookmark was created, open from the archived copy instead.
+    try {
+      const archivedPath = await invoke<string | null>("get_archived_session_path", {
+        sessionId: bookmark.session_id,
+      });
+      if (archivedPath) {
+        const archivedSession: SessionInfo = {
+          session_id: bookmark.session_id,
+          summary: null,
+          custom_title: null,
+          ai_title: null,
+          first_prompt: bookmark.preview,
+          project_path: bookmark.project_path,
+          project_name: bookmark.project_name,
+          created: null,
+          modified: null,
+          message_count: null,
+          conversation_count: 0,
+          total_tokens: 0,
+          git_branch: null,
+          forked_from_session_id: null,
+          jsonl_path: archivedPath,
+        };
+        await selectSession(archivedSession, bookmark.timestamp);
+      }
+    } catch (resolveError) {
+      console.error("Failed to resolve archived session:", resolveError);
     }
   }
 
@@ -245,6 +367,7 @@
   $effect(() => {
     loadProjects();
     checkForUpdates();
+    loadArchivedIds();
   });
 
   // ── Keyboard shortcuts overlay (toggled with `?`) ─────────────
@@ -327,6 +450,20 @@
 <div class="floating-actions">
   <button
     class="floating-action-btn"
+    onclick={cycleTheme}
+    title="Theme: {preferences.theme} — click to cycle (Dark → Light → Bright)"
+    aria-label="Cycle theme"
+  >
+    {#if preferences.theme === "dark"}
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    {:else if preferences.theme === "light"}
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+    {:else}
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="5"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" stroke-width="2"/></svg>
+    {/if}
+  </button>
+  <button
+    class="floating-action-btn"
     class:floating-action-active={showBookmarks}
     onclick={() => (showBookmarks = !showBookmarks)}
     title="Bookmarks"
@@ -361,6 +498,10 @@
 
 {#if showSettings}
   <SettingsPanel onClose={() => (showSettings = false)} />
+{/if}
+
+{#if !initialLoading && !preferences.hasSeenWelcome}
+  <WelcomeModal onDismiss={dismissWelcome} />
 {/if}
 
 <main>
@@ -411,6 +552,7 @@
             {sortOrder}
             onSortChange={(order) => (sortOrder = order)}
             tokenMap={sessionTokenMap}
+            savedSessionIds={archivedSessionIds}
           />
         {/if}
       </aside>
@@ -420,6 +562,11 @@
           {messages}
           loading={loadingMessages}
           scrollToTimestamp={pendingScrollTimestamp}
+          {forkParent}
+          onOpenParent={() => forkParent && selectSession(forkParent)}
+          saved={selectedSessionSaved}
+          saveLocked={selectedSaveLocked}
+          onToggleSave={toggleSaveSelectedSession}
         />
       </section>
     </div>
@@ -436,8 +583,8 @@
   :global(body) {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
       "Helvetica Neue", Arial, sans-serif;
-    background: #12121e;
-    color: #e0e0e0;
+    background: var(--bg-app);
+    color: var(--text-primary);
     overflow: hidden;
   }
 
@@ -460,9 +607,9 @@
     width: 34px;
     height: 34px;
     border-radius: 50%;
-    background: rgba(22, 22, 42, 0.92);
-    border: 1px solid #2a2a4a;
-    color: #8a8aaa;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -473,14 +620,14 @@
   }
 
   .floating-action-btn:hover {
-    background: #2a2a4a;
-    color: #c7d2fe;
+    background: var(--border);
+    color: var(--accent-text);
     border-color: rgba(99, 102, 241, 0.4);
   }
 
   .floating-action-btn.floating-action-active {
     background: rgba(99, 102, 241, 0.2);
-    color: #c7d2fe;
+    color: var(--accent-text);
     border-color: rgba(99, 102, 241, 0.5);
   }
 
@@ -496,7 +643,7 @@
     height: 16px;
     padding: 0 4px;
     border-radius: 999px;
-    background: #6366f1;
+    background: var(--accent);
     color: white;
     font-size: 10px;
     font-weight: 600;
@@ -522,11 +669,11 @@
     align-items: center;
     gap: 10px;
     padding: 8px 10px 8px 14px;
-    background: linear-gradient(135deg, #1e1e3a, #16162a);
-    border: 1px solid #6366f1;
+    background: linear-gradient(135deg, var(--bg-elevated), var(--bg-panel));
+    border: 1px solid var(--accent);
     border-radius: 10px;
     box-shadow: 0 10px 40px rgba(99, 102, 241, 0.25);
-    color: #e0e0f0;
+    color: var(--text-primary);
     font-size: 13px;
     max-width: 90%;
   }
@@ -541,7 +688,7 @@
   }
 
   .update-banner svg {
-    color: #818cf8;
+    color: var(--accent-hover);
     flex-shrink: 0;
   }
 
@@ -565,12 +712,12 @@
   }
 
   .update-btn.primary {
-    background: #6366f1;
+    background: var(--accent);
     color: white;
   }
 
   .update-btn.primary:hover:not(:disabled) {
-    background: #818cf8;
+    background: var(--accent-hover);
   }
 
   .update-btn.primary:disabled {
@@ -580,7 +727,7 @@
 
   .update-btn.ghost {
     background: transparent;
-    color: #8a8aaa;
+    color: var(--text-muted);
     padding: 6px;
     display: flex;
     align-items: center;
@@ -589,7 +736,7 @@
 
   .update-btn.ghost:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.05);
-    color: #e0e0f0;
+    color: var(--text-primary);
   }
 
   .loading-screen {
@@ -599,14 +746,14 @@
     justify-content: center;
     height: 100vh;
     gap: 16px;
-    color: #7a7a9a;
+    color: var(--text-muted);
   }
 
   .loading-spinner {
     width: 32px;
     height: 32px;
-    border: 3px solid #2a2a4a;
-    border-top-color: #6366f1;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -625,11 +772,11 @@
   .sidebar {
     width: 340px;
     min-width: 280px;
-    border-right: 1px solid #2a2a4a;
+    border-right: 1px solid var(--border);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    background: #1a1a2e;
+    background: var(--bg-sidebar);
   }
 
   .sidebar-header {
@@ -637,14 +784,14 @@
     align-items: center;
     gap: 10px;
     padding: 12px 16px;
-    border-bottom: 1px solid #2a2a4a;
+    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
 
   .back-btn {
-    background: #2a2a4a;
+    background: var(--border);
     border: none;
-    color: #a0a0c0;
+    color: var(--text-secondary);
     width: 32px;
     height: 32px;
     border-radius: 6px;
@@ -657,14 +804,14 @@
   }
 
   .back-btn:hover {
-    background: #3a3a5a;
-    color: #e0e0e0;
+    background: var(--border-strong);
+    color: var(--text-primary);
   }
 
   .refresh-btn {
-    background: #2a2a4a;
+    background: var(--border);
     border: none;
-    color: #a0a0c0;
+    color: var(--text-secondary);
     width: 30px;
     height: 30px;
     border-radius: 6px;
@@ -678,8 +825,8 @@
   }
 
   .refresh-btn:hover:not(:disabled) {
-    background: #3a3a5a;
-    color: #e0e0e0;
+    background: var(--border-strong);
+    color: var(--text-primary);
   }
 
   .refresh-btn:disabled {
@@ -706,12 +853,12 @@
   .project-name {
     font-size: 14px;
     font-weight: 600;
-    color: #e0e0f0;
+    color: var(--text-primary);
   }
 
   .project-path {
     font-size: 11px;
-    color: #5a5a7a;
+    color: var(--text-faint);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -722,7 +869,7 @@
     align-items: center;
     justify-content: center;
     padding: 40px 16px;
-    color: #5a5a7a;
+    color: var(--text-faint);
     font-size: 13px;
   }
 

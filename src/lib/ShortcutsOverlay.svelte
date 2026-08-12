@@ -71,8 +71,8 @@
   }
 
   .dialog {
-    background: #16162a;
-    border: 1px solid #2a2a4a;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
     border-radius: 12px;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
     width: 100%;
@@ -90,7 +90,7 @@
   h2 {
     font-size: 14px;
     font-weight: 600;
-    color: #e0e0f0;
+    color: var(--text-primary);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     margin: 0;
@@ -99,7 +99,7 @@
   .close-btn {
     background: transparent;
     border: none;
-    color: #7a7a9a;
+    color: var(--text-muted);
     width: 28px;
     height: 28px;
     border-radius: 6px;
@@ -110,8 +110,8 @@
   }
 
   .close-btn:hover {
-    background: #2a2a4a;
-    color: #e0e0f0;
+    background: var(--border);
+    color: var(--text-primary);
   }
 
   ul {
@@ -125,7 +125,7 @@
     align-items: center;
     gap: 16px;
     padding: 9px 0;
-    border-top: 1px solid #1e1e36;
+    border-top: 1px solid var(--bg-elevated);
   }
 
   li:first-child {
@@ -141,7 +141,7 @@
   }
 
   .plus {
-    color: #5a5a7a;
+    color: var(--text-faint);
     font-size: 11px;
   }
 
@@ -152,9 +152,9 @@
     font-family: "SF Mono", "Fira Code", monospace;
     font-size: 11px;
     font-weight: 600;
-    color: #c0c0d8;
-    background: #12121e;
-    border: 1px solid #2a2a4a;
+    color: var(--text-secondary);
+    background: var(--bg-app);
+    border: 1px solid var(--border);
     border-bottom-width: 2px;
     border-radius: 5px;
     padding: 3px 8px;
@@ -163,7 +163,7 @@
 
   .description {
     font-size: 13px;
-    color: #a0a0c0;
+    color: var(--text-secondary);
     line-height: 1.45;
   }
 </style>

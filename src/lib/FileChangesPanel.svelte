@@ -304,15 +304,15 @@
     height: 100%;
     width: 580px;
     min-width: 420px;
-    background: #0e0e1a;
-    border-left: 1px solid #2a2a4a;
+    background: var(--bg-app);
+    border-left: 1px solid var(--border);
     flex-shrink: 0;
   }
 
   .changes-header {
     padding: 14px 18px 12px;
-    border-bottom: 1px solid #2a2a4a;
-    background: #16162a;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
     flex-shrink: 0;
   }
 
@@ -326,7 +326,7 @@
   .changes-tag {
     font-size: 10px;
     font-weight: 700;
-    color: #818cf8;
+    color: var(--accent-hover);
     background: rgba(99, 102, 241, 0.12);
     border: 1px solid rgba(99, 102, 241, 0.28);
     padding: 2px 8px;
@@ -335,9 +335,9 @@
   }
 
   .close-btn {
-    background: #2a2a4a;
+    background: var(--border);
     border: none;
-    color: #a0a0c0;
+    color: var(--text-secondary);
     width: 28px;
     height: 28px;
     border-radius: 6px;
@@ -349,13 +349,13 @@
   }
 
   .close-btn:hover {
-    background: #3a3a5a;
-    color: #e0e0f0;
+    background: var(--border-strong);
+    color: var(--text-primary);
   }
 
   .changes-summary {
     font-size: 12px;
-    color: #8a8aaa;
+    color: var(--text-muted);
   }
 
   .filter-row {
@@ -364,8 +364,8 @@
 
   .filter-chip {
     background: transparent;
-    border: 1px solid #2a2a4a;
-    color: #8a8aaa;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
     font-size: 11px;
     font-weight: 500;
     padding: 3px 9px;
@@ -375,13 +375,13 @@
   }
 
   .filter-chip:hover {
-    color: #c0c0d8;
-    border-color: #3a3a5a;
+    color: var(--text-secondary);
+    border-color: var(--border-strong);
   }
 
   .filter-chip.filter-active {
     background: rgba(99, 102, 241, 0.18);
-    color: #c7d2fe;
+    color: var(--accent-text);
     border-color: rgba(99, 102, 241, 0.4);
   }
 
@@ -394,15 +394,15 @@
   .empty-state {
     padding: 40px 12px;
     text-align: center;
-    color: #5a5a7a;
+    color: var(--text-faint);
     font-size: 13px;
   }
 
   .file-block {
     margin-bottom: 6px;
-    border: 1px solid #1e1e36;
+    border: 1px solid var(--bg-elevated);
     border-radius: 8px;
-    background: #12121e;
+    background: var(--bg-app);
     overflow: hidden;
   }
 
@@ -422,7 +422,7 @@
     gap: 10px;
     width: 100%;
     padding: 9px 12px;
-    background: #16162a;
+    background: var(--bg-panel);
     border: none;
     color: inherit;
     text-align: left;
@@ -432,23 +432,23 @@
   }
 
   .file-row:hover {
-    background: #1a1a30;
+    background: var(--bg-elevated);
   }
 
   .file-row-open {
-    background: #1a1a36;
+    background: var(--bg-elevated);
     box-shadow: 0 1px 0 rgba(99, 102, 241, 0.2);
   }
 
   .chevron {
-    color: #6a6a8a;
+    color: var(--text-faint);
     flex-shrink: 0;
     transition: transform 0.15s, color 0.15s;
   }
 
   .chevron.rotated {
     transform: rotate(90deg);
-    color: #a5b4fc;
+    color: var(--accent-bright);
   }
 
   .file-path {
@@ -456,7 +456,7 @@
     min-width: 0;
     font-family: "SF Mono", "Fira Code", monospace;
     font-size: 12px;
-    color: #d8d8f0;
+    color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -484,14 +484,14 @@
 
   .badge-read {
     background: rgba(99, 102, 241, 0.1);
-    color: #818cf8;
+    color: var(--accent-hover);
     opacity: 0.7;
   }
 
   .read-only-note {
     padding: 10px 14px;
     font-size: 12px;
-    color: #6a6a8a;
+    color: var(--text-faint);
     font-style: italic;
   }
 
@@ -500,7 +500,7 @@
   }
 
   .edit-block {
-    border-top: 1px solid #1e1e36;
+    border-top: 1px solid var(--bg-elevated);
   }
 
   .edit-header {
@@ -564,13 +564,13 @@
 
   .edit-index {
     font-size: 11px;
-    color: #6a6a8a;
+    color: var(--text-faint);
     font-family: "SF Mono", "Fira Code", monospace;
   }
 
   .edit-time {
     font-size: 11px;
-    color: #5a5a7a;
+    color: var(--text-faint);
     margin-left: auto;
   }
 
@@ -619,8 +619,8 @@
     margin-top: 4px;
     margin-left: 12px;
     background: transparent;
-    border: 1px solid #2a2a4a;
-    color: #8a8aaa;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
     font-size: 11px;
     font-weight: 500;
     padding: 3px 10px;
@@ -630,7 +630,7 @@
   }
 
   .show-full-btn:hover {
-    color: #c7d2fe;
+    color: var(--accent-text);
     border-color: rgba(99, 102, 241, 0.4);
     background: rgba(99, 102, 241, 0.08);
   }
@@ -645,7 +645,7 @@
   }
 
   .changes-scroll::-webkit-scrollbar-thumb {
-    background: #2a2a4a;
+    background: var(--border);
     border-radius: 4px;
   }
 
