@@ -59,26 +59,77 @@ Post Tue–Thu, ~8–10am ET. Reply to every comment in the first 2 hours.
 
 ---
 
-## 4. Reddit (r/ClaudeAI, r/ClaudeCode, r/AnthropicAI)
+## 4. Reddit (r/ClaudeCode, r/ClaudeAI)
+
+> **Reframe (important):** the everyday value is *browsing + searching + understanding*
+> your whole Claude Code history — "nothing expires" is the urgency hook, not the whole
+> story. Lead with the **can't-look-back** pain; the 30-day deletion is the kicker.
+
+**What actually works in these subs** (researched 2026-08-21):
+
+| | r/ClaudeCode (~391k) | r/ClaudeAI (~1.1M) |
+|---|---|---|
+| Dominant posts | pain & anger, advice, "Built with Claude" shares | pain & anger, solution requests, self-promo (its own accepted category) |
+| What wins | casual stories/memes; *"I got tired of X so I built Y"* | practical, use-case-first builds; hype gets ignored |
+| Hot keywords | Claude, **Frustrating**, Built, Agent, **Sessions** | Claude, Code, **Tool**, session limits |
+| Self-promo | allowed — use the **"Built with Claude"** flair | allowed but must be **specific & practical**, not a generic announcement |
+
+Winning format = **"I got tired of \<specific pain\>, so I built \<thing\>"** — a story, not a
+feature dump. Tailor each sub (never paste identical text), disclose it's yours, reply in the
+first 2 hours. Note the space has entrants (ccstat, claude-historian, "Claude Cowork"), so make
+the differentiator explicit: *browse + search + surfaced hidden signal + keep them.*
+
+### Draft A — r/ClaudeCode (flair: Built with Claude)
 
 **Title:**
-`Claude Code deletes your sessions after 30 days — I built a free local app to keep the ones you care about`
+`I had ~40 Claude Code sessions rotting in ~/.claude with no way to look back — so I built a desktop app to browse and search all of them`
 
-**Body:** open with the hook (§2), then:
+**Body:**
 ```
-It reads straight from ~/.claude/projects (no cloud, no account). You get:
+Claude Code writes every session as JSONL under ~/.claude/projects and... that's it. No way to
+browse them, search across projects, or see what actually happened — and it quietly deletes them
+after ~30 days (cleanupPeriodDays).
 
-• All sessions, all projects, in one place — search + keyboard nav
-• "Save" or bookmark a session → it's copied locally and never expires
-• It surfaces stuff the logs hide: your mid-turn corrections, the answer you
-  picked in a question prompt, published artifacts, and which session a fork
-  branched from
-• Dark / light / bright themes
+So I built Claude Sessions (Tauri/Rust/Svelte, 100% local):
 
-Free + open source (Tauri/Rust/Svelte). Would love feedback.
-[link] · [15s demo gif]
+- Browse every session across every project; global search + in-session Cmd+F, keyboard nav,
+  handles 500k-token sessions fine
+- Surfaces what the raw logs bury: your mid-turn interrupts, the option you picked in an
+  AskUserQuestion, published artifacts, subagent/workflow transcripts, which files got edited,
+  and fork lineage
+- Save a session -> copied locally so it survives the 30-day cleanup
+- Export to Markdown, bookmarks, dark/light/bright
+
+No server, no account, nothing uploaded. Free + open source. Would love feedback on what else you
+wish you could dig out of your history.
+
+[repo] · [demo]
 ```
-Read each sub's self-promo rules first; lead with value, link second.
+
+### Draft B — r/ClaudeAI (lead with the use case; deletion is the kicker)
+
+**Title:**
+`I built a free, local app to browse and search your entire Claude Code history (and keep sessions before Claude Code auto-deletes them)`
+
+**Body:**
+```
+If you use Claude Code a lot, your whole history lives as JSONL files you can't easily read — and
+it's deleted after ~30 days. I wanted to actually revisit my work: find that session where I
+solved X, see which files a run touched, re-read a subagent's output.
+
+So I made Claude Sessions — a desktop app that reads straight from ~/.claude (no cloud, no account):
+
+- Search across all sessions and projects; per-session stats (tokens, tools, models)
+- See the stuff the logs hide: mid-turn corrections, the answer you picked in a prompt, artifacts
+  you published, fork lineage
+- Save/bookmark a session so it never expires
+- Free + open source, everything stays on your machine
+
+[link] · [demo] — feedback welcome.
+```
+
+Replace `[repo]`/`[link]` with the GitHub repo + the Vercel site, and `[demo]` with the demo
+video (now `demo.mp4`, not a GIF). Read each sub's rules first; lead with value, link second.
 
 ---
 
