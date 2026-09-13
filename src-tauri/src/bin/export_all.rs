@@ -147,6 +147,7 @@ fn main() {
             session.jsonl_path.clone(),
             save_path.to_string_lossy().to_string(),
             Some(title.clone()),
+            None, // batch export always includes the whole session
         ) {
             Ok(()) => {
                 exported += 1;

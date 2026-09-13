@@ -11,6 +11,7 @@
     sessionId = "",
     onImageOpen,
     onAgentOpen,
+    onExportFrom,
     toolResults,
     questions,
     artifacts,
@@ -21,6 +22,8 @@
     sessionId?: string;
     onImageOpen?: (url: string, label: string) => void;
     onAgentOpen?: (agentId: string, description: string) => void;
+    // When provided, an "Export from here" action exports this message → end.
+    onExportFrom?: () => void;
     toolResults?: Record<string, ToolResultPayload>;
     // AskUserQuestion Q&A keyed by tool_use_id — renders inline as the chosen answer.
     questions?: Record<string, AnsweredQuestion[]>;
@@ -604,6 +607,11 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
         {/if}
       </button>
+      {#if onExportFrom}
+        <button class="copy-btn" onclick={() => onExportFrom?.()} title="Export from here to the end (Markdown)" aria-label="Export from this message onward">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M4 21h16"/></svg>
+        </button>
+      {/if}
     </div>
   </div>
 {:else if message.role === "agent-notification" && message.notification}
@@ -827,6 +835,11 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
         {/if}
       </button>
+      {#if onExportFrom}
+        <button class="copy-btn" onclick={() => onExportFrom?.()} title="Export from here to the end (Markdown)" aria-label="Export from this message onward">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M4 21h16"/></svg>
+        </button>
+      {/if}
     </div>
   </div>
 {/if}

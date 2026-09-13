@@ -419,8 +419,14 @@
   let exporting = $state(false);
   let exportStatus = $state("");
 
-  async function exportToMarkdown() {
+  // startIndex omitted → whole session; a value → export from that message
+  // (0-based) through the end. The end is always the session end.
+  async function exportToMarkdown(startIndex?: number) {
     if (!session || exporting) return;
+    // Guard against a stray non-number (e.g. an event object) reaching the Rust
+    // command, which expects Option<usize>.
+    const start = typeof startIndex === "number" ? startIndex : undefined;
+    const partial = start != null && start > 0;
     exporting = true;
     exportStatus = "";
     try {
@@ -429,8 +435,8 @@
         .trim()
         .slice(0, 60) || session.session_id;
       const path = await save({
-        title: "Export session",
-        defaultPath: `${defaultName}.md`,
+        title: partial ? "Export from this message onward" : "Export session",
+        defaultPath: `${defaultName}${partial ? "-partial" : ""}.md`,
         filters: [{ name: "Markdown", extensions: ["md"] }],
       });
       if (!path) {
@@ -441,8 +447,9 @@
         jsonlPath: session.jsonl_path,
         savePath: path,
         title: session.custom_title || session.summary || session.ai_title || null,
+        startIndex: start ?? null,
       });
-      exportStatus = "Exported";
+      exportStatus = partial ? "Exported from here" : "Exported";
       setTimeout(() => (exportStatus = ""), 2000);
     } catch (exportError) {
       console.error("Export failed:", exportError);
@@ -567,7 +574,7 @@
           </button>
           <button
             class="header-action-btn"
-            onclick={exportToMarkdown}
+            onclick={() => exportToMarkdown()}
             disabled={exporting}
             title="Export conversation as Markdown"
           >
@@ -761,6 +768,7 @@
                 sessionId={session.session_id}
                 onImageOpen={openLightbox}
                 onAgentOpen={handleAgentOpen}
+                onExportFrom={() => exportToMarkdown(index)}
                 {toolResults}
                 questions={sessionQuestions}
                 artifacts={sessionArtifacts}

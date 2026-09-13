@@ -1874,15 +1874,28 @@ pub fn export_session_markdown(
     jsonl_path: String,
     save_path: String,
     title: Option<String>,
+    // 0-based index of the first message to include. None/0 exports the whole
+    // session; a larger value exports from that message through the end (the end
+    // is always the session end — only the start is trimmable).
+    start_index: Option<usize>,
 ) -> Result<(), String> {
     let messages = get_session_messages(jsonl_path)?;
+    let start = start_index.unwrap_or(0).min(messages.len());
 
     let mut markdown = String::new();
     if let Some(title) = title.as_ref().filter(|t| !t.is_empty()) {
         markdown.push_str(&format!("# {}\n\n", title));
     }
+    if start > 0 {
+        markdown.push_str(&format!(
+            "_Partial export — from message {} through the end ({} of {} messages)._\n\n",
+            start + 1,
+            messages.len() - start,
+            messages.len()
+        ));
+    }
 
-    for message in &messages {
+    for message in &messages[start..] {
         match message.role.as_str() {
             "user" => {
                 markdown.push_str(&format!("## You — {}\n\n", message.timestamp));
@@ -3765,6 +3778,38 @@ mod tests {
             1,
             "a queued message stored as both a user turn and an attachment must not duplicate"
         );
+    }
+
+    #[test]
+    fn export_start_index_trims_the_beginning_and_keeps_the_end() {
+        // Three user turns; exporting from index 1 must drop the first and keep the
+        // rest through the end, with a "partial export" note at the top.
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-08-12T05:00:00Z","message":{"role":"user","content":"first message alpha"}}"#,
+            r#"{"type":"user","timestamp":"2026-08-12T05:01:00Z","message":{"role":"user","content":"second message beta"}}"#,
+            r#"{"type":"user","timestamp":"2026-08-12T05:02:00Z","message":{"role":"user","content":"third message gamma"}}"#,
+        ];
+        let dir = std::env::temp_dir();
+        let source = dir.join(format!("cs_export_src_{}.jsonl", std::process::id()));
+        let dest = dir.join(format!("cs_export_out_{}.md", std::process::id()));
+        fs::write(&source, lines.join("\n")).unwrap();
+
+        export_session_markdown(
+            source.to_string_lossy().to_string(),
+            dest.to_string_lossy().to_string(),
+            Some("My Session".to_string()),
+            Some(1),
+        )
+        .unwrap();
+        let output = fs::read_to_string(&dest).unwrap();
+        let _ = fs::remove_file(&source);
+        let _ = fs::remove_file(&dest);
+
+        assert!(!output.contains("first message alpha"), "start=1 must drop the first message");
+        assert!(output.contains("second message beta"), "must keep the second message");
+        assert!(output.contains("third message gamma"), "must keep through the end");
+        assert!(output.contains("Partial export"), "a partial export must be noted");
+        assert!(output.contains("# My Session"), "the title is still written");
     }
 
     #[test]
