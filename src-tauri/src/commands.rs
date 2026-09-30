@@ -162,7 +162,7 @@ struct JsonlMessage {
 /// Returns the absolute path to a session's pasted image, if it exists.
 /// Claude Code caches pasted images at ~/.claude/image-cache/<session_id>/<N>.<ext>.
 /// Falls back to the local archive so images survive Claude Code's 30-day cleanup.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_image_path(app: tauri::AppHandle, session_id: String, image_number: u32) -> Option<String> {
     let image_in = |base: PathBuf| -> Option<String> {
         for extension in ["png", "jpg", "jpeg", "gif", "webp"] {
@@ -187,6 +187,18 @@ pub fn get_image_path(app: tauri::AppHandle, session_id: String, image_number: u
         }
     }
     None
+}
+
+/// Commands run concurrently on Tauri's async runtime, so two archive writes (e.g. a
+/// bookmark's auto-save racing a refresh, or a location move) could interleave file
+/// copies. Every command that writes to the archive holds this lock.
+// ponytail: one global lock for all archive writes; per-session locks if saves ever feel slow
+static ARCHIVE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_archive_writes() -> std::sync::MutexGuard<'static, ()> {
+    ARCHIVE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Path of the small config file that can hold a user-chosen archive location.
@@ -271,24 +283,31 @@ fn archive_info(app: &tauri::AppHandle) -> Result<ArchiveInfo, String> {
 }
 
 /// Transparency for Settings → Storage: where archives live, how many, total size.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_archive_info(app: tauri::AppHandle) -> Result<ArchiveInfo, String> {
     archive_info(&app)
 }
 
 /// Move the archive to a user-chosen folder and remember it. Existing archived
 /// sessions are moved along, so nothing is orphaned. Returns updated info.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_archive_location(
     app: tauri::AppHandle,
     new_parent_dir: String,
 ) -> Result<ArchiveInfo, String> {
+    let _archive_guard = lock_archive_writes();
     let old_root = archive_root(&app)?;
     // Nest under a named folder so we never dump files into e.g. Documents root.
     let target = PathBuf::from(&new_parent_dir).join("ClaudeSessionsArchive");
 
     if target == old_root {
         return archive_info(&app);
+    }
+    if target.starts_with(&old_root) {
+        return Err(
+            "Choose a folder outside the current archive — moving the archive into itself would copy it forever."
+                .to_string(),
+        );
     }
 
     fs::create_dir_all(&target)
@@ -312,13 +331,24 @@ pub fn set_archive_location(
         serde_json::to_string_pretty(&config).unwrap_or_default(),
     )
     .map_err(|error| format!("Cannot save config: {}", error))?;
+    allow_archive_images(&app);
 
     archive_info(&app)
 }
 
+/// Let the webview load pasted images from the archive. The default archive is covered
+/// statically in tauri.conf.json; a user-chosen location can be anywhere, so it is
+/// allowed at runtime (on startup and after a move).
+pub(crate) fn allow_archive_images(app: &tauri::AppHandle) {
+    if let Ok(root) = archive_root(app) {
+        let _ = app.asset_protocol_scope().allow_directory(root.join("image-cache"), true);
+    }
+}
+
 /// Reset the archive back to the app-default location (moves files back too).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reset_archive_location(app: tauri::AppHandle) -> Result<ArchiveInfo, String> {
+    let _archive_guard = lock_archive_writes();
     let old_root = archive_root(&app)?;
     let default_root = app
         .path()
@@ -337,7 +367,7 @@ pub fn reset_archive_location(app: tauri::AppHandle) -> Result<ArchiveInfo, Stri
 }
 
 /// Reveal the archive folder in Finder.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_archive_location(app: tauri::AppHandle) -> Result<(), String> {
     let root = archive_root(&app)?;
     fs::create_dir_all(&root).ok();
@@ -429,7 +459,7 @@ fn archive_session_to(
 
 /// Copy a session's transcript + subagent logs + pasted images into the local
 /// archive so it survives Claude Code's 30-day cleanup, keeping bookmarks openable.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn archive_session(
     app: tauri::AppHandle,
     jsonl_path: String,
@@ -438,6 +468,7 @@ pub fn archive_session(
     project_name: String,
     title: Option<String>,
 ) -> Result<(), String> {
+    let _archive_guard = lock_archive_writes();
     let root = archive_root(&app)?;
     let source = PathBuf::from(&jsonl_path);
     let live_images = dirs::home_dir()
@@ -455,7 +486,7 @@ pub fn archive_session(
 
 /// If a session has been archived, returns its archived transcript path — used as a
 /// fallback when the live file has expired. None if the session isn't archived.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_archived_session_path(app: tauri::AppHandle, session_id: String) -> Option<String> {
     let root = archive_root(&app).ok()?;
     let dest = root.join(&session_id).join(format!("{}.jsonl", session_id));
@@ -466,34 +497,74 @@ pub fn get_archived_session_path(app: tauri::AppHandle, session_id: String) -> O
     }
 }
 
-/// The session ids that currently have an archived copy — so the UI can mark saved
-/// sessions in the list and header with one call instead of one probe per session.
-#[tauri::command]
-pub fn get_archived_session_ids(app: tauri::AppHandle) -> Vec<String> {
-    let root = match archive_root(&app) {
-        Ok(root) => root,
+/// Every archived session, pointing at its archived transcript. The UI marks saved
+/// sessions with it and keeps listing them after Claude Code's cleanup deletes the live
+/// file — without this, a saved session was only reachable through a bookmark.
+// ponytail: reads each archived transcript in full on startup; move to an index once archives number in the hundreds
+#[tauri::command(async)]
+pub fn get_archived_sessions(app: tauri::AppHandle) -> Vec<SessionInfo> {
+    match archive_root(&app) {
+        Ok(root) => archived_sessions_in(&root),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Core of `get_archived_sessions` against an explicit root (unit-testable, like
+/// `archive_session_to`).
+fn archived_sessions_in(root: &Path) -> Vec<SessionInfo> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
         Err(_) => return Vec::new(),
     };
-    let mut ids = Vec::new();
-    if let Ok(entries) = fs::read_dir(&root) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name == "image-cache" || !entry.path().is_dir() {
-                continue;
-            }
-            // Only count it as saved if the transcript is actually present.
-            if entry.path().join(format!("{}.jsonl", name)).exists() {
-                ids.push(name);
-            }
+    let mut sessions = Vec::new();
+    for entry in entries.flatten() {
+        let session_id = entry.file_name().to_string_lossy().to_string();
+        if session_id == "image-cache" || !entry.path().is_dir() {
+            continue;
         }
+        // Only count it as saved if the transcript is actually present.
+        let jsonl_path = entry.path().join(format!("{}.jsonl", session_id));
+        if !jsonl_path.exists() {
+            continue;
+        }
+        let meta: Value = fs::read_to_string(entry.path().join("meta.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(Value::Null);
+        let meta_text = |key: &str| meta.get(key).and_then(|value| value.as_str()).map(String::from);
+        let project_path = meta_text("project_path").unwrap_or_default();
+        let project_name = meta_text("project_name").unwrap_or_else(|| {
+            project_path.rsplit('/').next().unwrap_or_default().to_string()
+        });
+        let metadata = extract_quick_metadata(&jsonl_path);
+
+        sessions.push(SessionInfo {
+            summary: None,
+            custom_title: metadata.custom_title,
+            ai_title: metadata.ai_title.or_else(|| meta_text("title")),
+            first_prompt: metadata.first_prompt,
+            project_path,
+            project_name,
+            created: metadata.first_timestamp,
+            // The archive copy's mtime is the copy time, so prefer the transcript's own last timestamp.
+            modified: metadata.last_timestamp.or_else(|| get_file_mtime_iso(&jsonl_path)),
+            message_count: None,
+            conversation_count: metadata.conversation_count,
+            total_tokens: metadata.total_tokens,
+            git_branch: None,
+            forked_from_session_id: detect_fork_parent(&jsonl_path),
+            jsonl_path: jsonl_path.to_string_lossy().to_string(),
+            session_id,
+        });
     }
-    ids
+    sessions
 }
 
 /// Remove a session's archived copy (transcript + subagents + images + meta). Deletes
 /// only our archive — the live session, if any, is untouched.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unarchive_session(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+    let _archive_guard = lock_archive_writes();
     let root = archive_root(&app)?;
     let session_dir = root.join(&session_id);
     if session_dir.exists() {
@@ -533,7 +604,7 @@ pub struct FileChange {
 /// Per-session breakdown of file changes — captures the actual old/new content
 /// from each Edit/Write/MultiEdit/NotebookEdit call so the UI can render a diff.
 /// Bash file ops are skipped (too heuristic). Subagent ops aren't included in v1.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_session_file_changes(jsonl_path: String) -> Result<Vec<FileChange>, String> {
     let path = PathBuf::from(&jsonl_path);
     if !path.exists() {
@@ -751,7 +822,7 @@ fn build_display_path(project_path: &str, project_name: &str, file_path: &str) -
     file_path.to_string()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_projects() -> Result<Vec<ProjectInfo>, String> {
     let claude_dir = get_claude_projects_dir()?;
     let mut projects: Vec<ProjectInfo> = Vec::new();
@@ -913,7 +984,7 @@ fn detect_fork_parent(path: &Path) -> Option<String> {
     None
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn scan_projects(project_path: Option<String>) -> Result<Vec<SessionInfo>, String> {
     let claude_dir = get_claude_projects_dir()?;
     let mut sessions: Vec<SessionInfo> = Vec::new();
@@ -1107,7 +1178,7 @@ pub struct GlobalSearchResult {
     pub jsonl_path: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn global_search(query: String) -> Result<Vec<GlobalSearchResult>, String> {
     let claude_dir = get_claude_projects_dir()?;
     let mut results: Vec<GlobalSearchResult> = Vec::new();
@@ -1286,7 +1357,7 @@ pub struct ToolCount {
     pub count: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_session_stats(jsonl_path: String) -> Result<SessionStats, String> {
     let path = PathBuf::from(&jsonl_path);
     if !path.exists() {
@@ -1433,7 +1504,7 @@ fn count_session_tokens(path: &Path) -> u64 {
 
 /// Token totals for a whole project in one call (session_id → tokens), avoiding a
 /// per-session IPC round-trip. Sessions with zero tokens or read errors are omitted.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_project_tokens(
     jsonl_paths: Vec<String>,
 ) -> Result<std::collections::HashMap<String, u64>, String> {
@@ -1461,7 +1532,7 @@ pub struct ToolResultPayload {
 
 /// Extract every tool_result from a session's JSONL into a map keyed by tool_use_id.
 /// The frontend stores this map and renders results when a tool pill is expanded.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_tool_results(
     jsonl_path: String,
 ) -> Result<std::collections::HashMap<String, ToolResultPayload>, String> {
@@ -1566,7 +1637,7 @@ pub struct AnsweredQuestion {
 /// the questions, the offered options, AND the user's chosen answer(s) in an
 /// `answers` map, so a single pass over the tool_result entries is enough. The
 /// frontend renders this inline under the AskUserQuestion pill, chosen option lit.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_session_questions(
     jsonl_path: String,
 ) -> Result<std::collections::HashMap<String, Vec<AnsweredQuestion>>, String> {
@@ -1760,7 +1831,7 @@ pub struct SessionArtifact {
 /// tool_use_id. The answer entry's `toolUseResult` carries {url, path, title}, so
 /// a single pass over the tool_result entries is enough. The frontend renders a
 /// card with the title and a copy-link button in place of the generic pill.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_session_artifacts(
     jsonl_path: String,
 ) -> Result<std::collections::HashMap<String, SessionArtifact>, String> {
@@ -1828,22 +1899,33 @@ fn extract_persisted_path(content: &str) -> Option<String> {
     if path.is_empty() { None } else { Some(path.to_string()) }
 }
 
+/// Resolve `path` (following `..` and symlinks) and accept it only if it sits inside
+/// `projects_dir` and under a `tool-results` directory. The path comes from transcript
+/// text, so a lexical component check alone would let `tool-results/../../x` through.
+fn validate_tool_output_path(path: &Path, projects_dir: &Path) -> Result<PathBuf, String> {
+    let resolved = fs::canonicalize(path)
+        .map_err(|resolve_error| format!("Cannot resolve path: {}", resolve_error))?;
+    let projects_root = fs::canonicalize(projects_dir)
+        .map_err(|resolve_error| format!("Cannot resolve projects dir: {}", resolve_error))?;
+    let inside_tool_results = resolved
+        .strip_prefix(&projects_root)
+        .map(|relative| relative.components().any(|component| component.as_os_str() == "tool-results"))
+        .unwrap_or(false);
+    if !inside_tool_results {
+        return Err("Path is not inside a Claude Code tool-results directory".to_string());
+    }
+    Ok(resolved)
+}
+
 /// Read the full text of a persisted tool-result sidecar file. Capped at a generous
 /// size to avoid yanking gigabytes into the renderer; the frontend warns when truncated.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_tool_output_file(path: String) -> Result<String, String> {
     let pathbuf = PathBuf::from(&path);
     if !pathbuf.exists() {
         return Err(format!("File not found: {}", path));
     }
-    // Safety: only allow reading files inside ~/.claude/projects/.../tool-results/.
-    // Refuse any path that doesn't have "tool-results" as a directory component.
-    if !pathbuf
-        .components()
-        .any(|component| component.as_os_str() == "tool-results")
-    {
-        return Err("Path is not inside a tool-results directory".to_string());
-    }
+    let pathbuf = validate_tool_output_path(&pathbuf, &get_claude_projects_dir()?)?;
 
     const MAX_BYTES: u64 = 5 * 1024 * 1024; // 5 MB
     let metadata = pathbuf
@@ -1869,7 +1951,7 @@ pub fn read_tool_output_file(path: String) -> Result<String, String> {
         .map_err(|read_error| format!("Cannot read: {}", read_error))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_session_markdown(
     jsonl_path: String,
     save_path: String,
@@ -2026,7 +2108,7 @@ fn build_tool_to_agent_map(jsonl_path: &PathBuf) -> std::collections::HashMap<St
     map
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_subagents(jsonl_path: String) -> Result<Vec<SubagentInfo>, String> {
     let path = PathBuf::from(&jsonl_path);
     if !path.exists() {
@@ -2122,7 +2204,7 @@ pub fn list_subagents(jsonl_path: String) -> Result<Vec<SubagentInfo>, String> {
     Ok(subagents)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_subagent_messages(jsonl_path: String) -> Result<Vec<ConversationMessage>, String> {
     // Subagent transcripts share the same JSONL shape as the parent — reuse the parser.
     // Sidechain sidechains aren't a thing yet (subagents don't spawn subagents); the existing
@@ -2253,7 +2335,7 @@ pub fn get_subagent_messages(jsonl_path: String) -> Result<Vec<ConversationMessa
     Ok(messages)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_session_messages(jsonl_path: String) -> Result<Vec<ConversationMessage>, String> {
     let path = PathBuf::from(&jsonl_path);
     if !path.exists() {
@@ -3848,6 +3930,63 @@ mod tests {
             archived_jsonl.parent().unwrap().join(&session_id).join("subagents").join("agent-x.jsonl"),
             archived_agent
         );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn archived_sessions_are_listed_from_archive_with_meta_project() {
+        let session_id = format!("sess-listed-{}", std::process::id());
+        let base = std::env::temp_dir().join(format!("cs_archived_list_test_{}", std::process::id()));
+        let live_project = base.join("live");
+        let archive_root = base.join("archive");
+        fs::create_dir_all(&live_project).unwrap();
+        let source_jsonl = live_project.join(format!("{}.jsonl", session_id));
+        fs::write(
+            &source_jsonl,
+            r#"{"type":"user","timestamp":"2026-08-01T10:00:00.000Z","message":{"role":"user","content":"find the flaky test"}}
+{"type":"custom-title","customTitle":"Flaky test hunt"}
+"#,
+        )
+        .unwrap();
+        let meta = serde_json::json!({ "session_id": session_id, "project_path": "/Users/me/app", "project_name": "app" });
+        archive_session_to(&archive_root, &source_jsonl, &session_id, None, &meta).unwrap();
+
+        // The live transcript expiring must not hide the saved copy.
+        fs::remove_file(&source_jsonl).unwrap();
+        let listed = archived_sessions_in(&archive_root);
+        let _ = fs::remove_dir_all(&base);
+
+        assert_eq!(listed.len(), 1);
+        let session = &listed[0];
+        assert_eq!(session.session_id, session_id);
+        assert_eq!(session.project_path, "/Users/me/app");
+        assert_eq!(session.project_name, "app");
+        assert_eq!(session.custom_title.as_deref(), Some("Flaky test hunt"));
+        assert!(session.jsonl_path.contains("archive"), "must point at the archived copy: {}", session.jsonl_path);
+        assert_eq!(session.modified.as_deref(), Some("2026-08-01T10:00:00.000Z"));
+    }
+
+    #[test]
+    fn tool_output_path_rejects_traversal_outside_projects() {
+        let base = std::env::temp_dir().join(format!("cs_tool_output_test_{}", std::process::id()));
+        let projects = base.join("projects");
+        let tool_results = projects.join("proj").join("sess").join("tool-results");
+        fs::create_dir_all(&tool_results).unwrap();
+        fs::write(tool_results.join("out.txt"), "tool output").unwrap();
+        fs::write(base.join("secret.txt"), "not yours").unwrap();
+
+        let legit = tool_results.join("out.txt");
+        assert!(validate_tool_output_path(&legit, &projects).is_ok());
+
+        // Lexically contains "tool-results" but resolves outside the projects dir.
+        let escaping = tool_results.join("..").join("..").join("..").join("..").join("secret.txt");
+        assert!(escaping.exists(), "fixture should exist so only the guard can reject it");
+        assert!(validate_tool_output_path(&escaping, &projects).is_err());
+
+        // Inside projects but not under a tool-results directory.
+        fs::write(projects.join("proj").join("notes.txt"), "x").unwrap();
+        assert!(validate_tool_output_path(&projects.join("proj").join("notes.txt"), &projects).is_err());
 
         let _ = fs::remove_dir_all(&base);
     }

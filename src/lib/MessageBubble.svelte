@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+  import DOMPurify from "dompurify";
   import type { ConversationMessage, SessionInfo, ToolResultPayload, AnsweredQuestion, SessionArtifact } from "./types";
   import { prettyToolName } from "./format";
   import { copyToClipboard } from "./clipboard";
@@ -282,6 +283,12 @@
     });
   }
 
+  // Transcripts carry untrusted text (fetched web pages, tool output). The renderer
+  // escapes first, but every {@html} still goes through DOMPurify as a second layer.
+  function safeHtml(html: string): string {
+    return DOMPurify.sanitize(html);
+  }
+
   function escapeHtml(text: string): string {
     return text
       .replace(/&/g, "&amp;")
@@ -536,7 +543,7 @@
     <details class="compaction-details">
       <summary>View compaction summary</summary>
       <div class="compaction-content">
-        {@html renderMarkdown(message.text)}
+        {@html safeHtml(renderMarkdown(message.text))}
       </div>
     </details>
   </div>
@@ -556,7 +563,7 @@
       {#each userSegments as segment}
         {#if segment.kind === "text"}
           {#if searchQuery}
-            <p>{@html highlightSearch(escapeHtml(segment.content), searchQuery)}</p>
+            <p>{@html safeHtml(highlightSearch(escapeHtml(segment.content), searchQuery))}</p>
           {:else}
             <p>{segment.content}</p>
           {/if}
@@ -640,7 +647,7 @@
           <summary>Show result</summary>
           <div class="notification-result">
             {#if searchQuery}
-              {@html highlightSearch(escapeHtml(note.result), searchQuery)}
+              {@html safeHtml(highlightSearch(escapeHtml(note.result), searchQuery))}
             {:else}
               {note.result}
             {/if}
@@ -663,7 +670,7 @@
       {#each assistantSegments as segment}
         {#if segment.kind === "text"}
           <div class="segment-text">
-            {@html searchQuery ? highlightSearch(renderMarkdown(segment.content), searchQuery) : renderMarkdown(segment.content)}
+            {@html safeHtml(searchQuery ? highlightSearch(renderMarkdown(segment.content), searchQuery) : renderMarkdown(segment.content))}
           </div>
         {:else if segment.kind === "tool"}
           {@const toolResult = segment.toolUseId ? toolResults?.[segment.toolUseId] : undefined}
@@ -806,7 +813,7 @@
               Thinking...
             </summary>
             <div class="thinking-content">
-              {@html renderMarkdown(segment.content)}
+              {@html safeHtml(renderMarkdown(segment.content))}
             </div>
           </details>
         {/if}

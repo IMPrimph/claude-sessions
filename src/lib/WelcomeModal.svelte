@@ -19,7 +19,7 @@
   <div class="dialog" onclick={(event) => event.stopPropagation()}>
     <div class="brand-lockup">
       <BrandMark size={15} />
-      <span>Claude Sessions</span>
+      <span>Evertusk</span>
     </div>
     <div class="hero-icon">
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
@@ -39,7 +39,7 @@
         </span>
         <div class="point-text">
           <strong>Save what matters.</strong> Bookmark a message or hit
-          <em>Save</em> on a session, and Claude Sessions keeps a full copy so it
+          <em>Save</em> on a session, and Evertusk keeps a full copy so it
           never expires.
         </div>
       </div>
@@ -55,7 +55,7 @@
     </div>
 
     <button class="cta" onclick={onDismiss}>Got it — let me browse</button>
-    <p class="footnote">You can change where saved sessions live in Settings.</p>
+    <p class="footnote">You can change where saved sessions live in Settings. Evertusk is not affiliated with Anthropic.</p>
   </div>
 </div>
 

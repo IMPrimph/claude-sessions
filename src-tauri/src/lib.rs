@@ -7,6 +7,10 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .setup(|app| {
+            commands::allow_archive_images(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_projects,
             commands::scan_projects,
@@ -21,7 +25,7 @@ pub fn run() {
             commands::get_session_artifacts,
             commands::archive_session,
             commands::get_archived_session_path,
-            commands::get_archived_session_ids,
+            commands::get_archived_sessions,
             commands::unarchive_session,
             commands::get_archive_info,
             commands::set_archive_location,

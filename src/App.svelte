@@ -22,7 +22,7 @@
   let projects: ProjectInfo[] = $state([]);
   let selectedProject: ProjectInfo | null = $state(null);
   let sessions: SessionInfo[] = $state([]);
-  let selectedSession: SessionInfo | null = $state(null);
+  let selectedSession = $state<SessionInfo | null>(null);
   let messages: ConversationMessage[] = $state([]);
   let loadingMessages = $state(false);
   let loadingSessions = $state(false);
@@ -48,18 +48,58 @@
       : null
   );
 
-  // Saved (archived) sessions — ids of sessions that have a local archived copy so
-  // they survive Claude Code's 30-day cleanup.
+  // Saved (archived) sessions — local copies that survive Claude Code's 30-day cleanup.
+  // Each entry's jsonl_path points at the archived transcript.
+  let archivedSessions: SessionInfo[] = $state([]);
   let archivedSessionIds: Set<string> = $state(new Set());
 
-  async function loadArchivedIds() {
+  async function loadArchivedSessions() {
     try {
-      const ids = await invoke<string[]>("get_archived_session_ids");
-      archivedSessionIds = new Set(ids);
+      archivedSessions = await invoke<SessionInfo[]>("get_archived_sessions");
+      archivedSessionIds = new Set(archivedSessions.map((session) => session.session_id));
     } catch {
       // Archive is optional — ignore failures.
     }
   }
+
+  // Saved sessions whose live transcript Claude Code already deleted still belong in
+  // their project's list; they open from the archived copy.
+  function withExpiredSaved(liveSessions: SessionInfo[], projectPath: string): SessionInfo[] {
+    const liveIds = new Set(liveSessions.map((session) => session.session_id));
+    const expired = archivedSessions.filter(
+      (session) => session.project_path === projectPath && !liveIds.has(session.session_id)
+    );
+    if (expired.length === 0) return liveSessions;
+    return [...liveSessions, ...expired].sort((first, second) =>
+      (second.modified ?? "").localeCompare(first.modified ?? "")
+    );
+  }
+
+  // Live projects plus projects that now exist only as saved sessions (every live
+  // transcript expired), so those saved sessions stay reachable from the grid.
+  let allProjects = $derived.by(() => {
+    const livePaths = new Set(projects.map((project) => project.project_path));
+    const archiveOnly = new Map<string, ProjectInfo>();
+    for (const session of archivedSessions) {
+      if (livePaths.has(session.project_path)) continue;
+      const modifiedMs = session.modified ? Date.parse(session.modified) : 0;
+      const existing = archiveOnly.get(session.project_path);
+      if (existing) {
+        existing.session_count += 1;
+        existing.last_active_ms = Math.max(existing.last_active_ms, modifiedMs);
+        continue;
+      }
+      archiveOnly.set(session.project_path, {
+        project_path: session.project_path,
+        project_name: session.project_name,
+        short_path: session.project_path,
+        session_count: 1,
+        last_active: null,
+        last_active_ms: modifiedMs,
+      });
+    }
+    return [...projects, ...archiveOnly.values()];
+  });
 
   let selectedSessionSaved = $derived(
     selectedSession ? archivedSessionIds.has(selectedSession.session_id) : false
@@ -85,6 +125,7 @@
         const next = new Set(archivedSessionIds);
         next.delete(sessionId);
         archivedSessionIds = next;
+        archivedSessions = archivedSessions.filter((entry) => entry.session_id !== sessionId);
       } catch (unsaveError) {
         console.error("Failed to remove saved session:", unsaveError);
       }
@@ -124,9 +165,10 @@
     loadingSessions = true;
 
     try {
-      sessions = await invoke<SessionInfo[]>("scan_projects", {
+      const liveSessions = await invoke<SessionInfo[]>("scan_projects", {
         projectPath: project.project_path,
       });
+      sessions = withExpiredSaved(liveSessions, project.project_path);
       loadTokensInBackground(sessions);
     } catch (loadError) {
       console.error("Failed to load sessions:", loadError);
@@ -180,9 +222,12 @@
 
     try {
       // Reload sessions for the current project
-      const updatedSessions = await invoke<SessionInfo[]>("scan_projects", {
-        projectPath: currentProject.project_path,
-      });
+      const updatedSessions = withExpiredSaved(
+        await invoke<SessionInfo[]>("scan_projects", {
+          projectPath: currentProject.project_path,
+        }),
+        currentProject.project_path
+      );
       sessions = updatedSessions;
       loadTokensInBackground(updatedSessions);
 
@@ -248,7 +293,7 @@
   // Works even if the project isn't in the loaded list (synthesize a minimal entry).
   async function openBookmark(bookmark: Bookmark) {
     showBookmarks = false;
-    let project = projects.find((entry) => entry.project_path === bookmark.project_path);
+    let project = allProjects.find((entry) => entry.project_path === bookmark.project_path);
     if (!project) {
       project = {
         project_path: bookmark.project_path,
@@ -367,7 +412,7 @@
   $effect(() => {
     loadProjects();
     checkForUpdates();
-    loadArchivedIds();
+    loadArchivedSessions();
   });
 
   // ── Keyboard shortcuts overlay (toggled with `?`) ─────────────
@@ -513,7 +558,7 @@
   {:else if showBookmarks}
     <BookmarksView onBack={() => (showBookmarks = false)} onJump={openBookmark} />
   {:else if !selectedProject}
-    <ProjectGrid {projects} onSelect={selectProject} onOpenResult={openSearchResult} onCheckUpdates={() => checkForUpdates(true)} onOpenBookmarks={() => (showBookmarks = true)} />
+    <ProjectGrid projects={allProjects} onSelect={selectProject} onOpenResult={openSearchResult} onCheckUpdates={() => checkForUpdates(true)} onOpenBookmarks={() => (showBookmarks = true)} />
   {:else}
     <div class="app-layout">
       <aside class="sidebar">

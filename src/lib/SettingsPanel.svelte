@@ -179,7 +179,7 @@
       <div class="setting-info">
         <div class="setting-name">Saved sessions</div>
         <div class="setting-help">
-          When you bookmark a message, Claude Sessions copies that whole session
+          When you bookmark a message, Evertusk copies that whole session
           here so it survives Claude Code's 30-day cleanup. Stored: transcript,
           subagent logs, pasted images, and a small metadata file. Everything stays
           on your machine — nothing is uploaded.
@@ -219,7 +219,7 @@
     </section>
 
     <footer>
-      <span class="footer-hint">Preferences are saved locally.</span>
+      <span class="footer-hint">Preferences are saved locally · Evertusk is not affiliated with Anthropic.</span>
     </footer>
   </div>
 </div>

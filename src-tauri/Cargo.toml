@@ -1,10 +1,7 @@
 [package]
 name = "claude-sessions"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
-# The `export_all` utility bin (src/bin/) means `cargo run` is ambiguous without this;
-# pin the app as the default so `tauri dev`/`cargo run` launch the GUI.
-default-run = "claude-sessions"
 
 [lib]
 name = "claude_sessions_lib"

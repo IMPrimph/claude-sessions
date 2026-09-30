@@ -1,6 +1,8 @@
-# Claude Sessions
+# Evertusk
 
-A lightweight desktop app to browse your Claude Code session history across all projects.
+A lightweight Mac app to browse, search, and keep your Claude Code session history across all projects. Claude Code deletes sessions after 30 days; Evertusk keeps the ones you care about.
+
+_Evertusk is an independent project for Claude Code users. It is not affiliated with or endorsed by Anthropic._
 
 ## Features
 
@@ -19,11 +21,11 @@ A lightweight desktop app to browse your Claude Code session history across all 
 
 ### macOS (pre-built)
 
-Download the latest `.dmg` from [Releases](../../releases), open it, and drag **Claude Sessions** to Applications.
+Download the latest `.dmg` from [Releases](../../releases), open it, and drag **Evertusk** to Applications.
 
 If macOS shows "app is damaged", run this once:
 ```bash
-xattr -cr /Applications/Claude\ Sessions.app
+xattr -cr /Applications/Evertusk.app
 ```
 
 Or use the install script:
@@ -52,3 +54,7 @@ npx tauri dev
 ## How it works
 
 Reads session data from `~/.claude/projects/` — the JSONL files that Claude Code writes locally. No data is sent anywhere; everything stays on your machine.
+
+## License
+
+[FSL-1.1-MIT](LICENSE.md) (Functional Source License). You can read, run, and modify the code for any purpose except building a competing commercial product. Each release converts to the MIT license two years after it ships.

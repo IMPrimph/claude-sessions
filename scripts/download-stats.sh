@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Prints download + rough-usage stats for Claude Sessions, pulled live from the
+# Prints download + rough-usage stats for Evertusk, pulled live from the
 # GitHub Releases API. No tracking, no third party — just the counts GitHub already
 # keeps for every release asset.
 #
@@ -18,7 +18,7 @@ if ! command -v gh &>/dev/null; then
   exit 1
 fi
 
-echo "=== Claude Sessions — download stats ==="
+echo "=== Evertusk — download stats ==="
 echo "Repo: $REPO"
 echo ""
 

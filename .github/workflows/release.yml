@@ -24,7 +24,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache Rust dependencies
         uses: swatinem/rust-cache@v2
@@ -34,6 +34,31 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      # Apple signing + notarization switch on only once the Apple secrets exist, so
+      # tag builds keep working (unsigned, as before) until the developer account is set
+      # up. Empty secrets are never exported — an empty APPLE_CERTIFICATE would make the
+      # bundler try to import a blank certificate and fail.
+      - name: Enable Apple signing when secrets are configured
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No APPLE_CERTIFICATE secret: building unsigned."
+            exit 0
+          fi
+          for variable_name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            variable_value="${!variable_name}"
+            if [ -n "$variable_value" ]; then
+              { echo "$variable_name<<APPLE_ENV_EOF"; echo "$variable_value"; echo "APPLE_ENV_EOF"; } >> "$GITHUB_ENV"
+            fi
+          done
+          echo "Apple signing and notarization enabled."
+
       - name: Build and release with Tauri
         uses: tauri-apps/tauri-action@v0
         env:
@@ -42,9 +67,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: 'Claude Sessions v__VERSION__'
+          releaseName: 'Evertusk v__VERSION__'
           releaseBody: 'See the assets below to download and install this version.'
-          releaseDraft: true
+          # Published straight away: a draft release leaves the website's download link
+          # 404ing until someone clicks Publish, which is how v1.1.0 went missing.
+          releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-          args: '--target aarch64-apple-darwin'
+          args: '--target universal-apple-darwin'

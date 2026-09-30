@@ -145,7 +145,7 @@
   <div class="project-header">
     <div class="title-row">
       <div class="brand-badge"><BrandMark size={30} /></div>
-      <h1>Claude Sessions</h1>
+      <h1>Evertusk</h1>
       {#if appVersion}<span class="version-badge">v{appVersion}</span>{/if}
       {#if onOpenBookmarks}
         <button class="update-check-btn" onclick={onOpenBookmarks} title="View bookmarks">

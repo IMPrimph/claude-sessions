@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== Claude Sessions - Install ==="
+echo "=== Evertusk - Install ==="
 echo ""
 
 # Check prerequisites
@@ -38,7 +38,7 @@ echo ""
 echo "Building production app..."
 npx tauri build
 
-APP_PATH="$PROJECT_DIR/src-tauri/target/release/bundle/macos/Claude Sessions.app"
+APP_PATH="$PROJECT_DIR/src-tauri/target/release/bundle/macos/Evertusk.app"
 DMG_PATH=$(find "$PROJECT_DIR/src-tauri/target/release/bundle/dmg/" -name "*.dmg" 2>/dev/null | head -1)
 
 echo ""
@@ -49,15 +49,15 @@ if [ "$(uname)" = "Darwin" ]; then
   read -p "Install to /Applications? [y/N] " answer
   if [[ "$answer" =~ ^[Yy]$ ]]; then
     echo "Copying to /Applications..."
-    rm -rf "/Applications/Claude Sessions.app"
+    rm -rf "/Applications/Evertusk.app" "/Applications/Claude Sessions.app"
     cp -r "$APP_PATH" /Applications/
-    echo "Installed! You can find 'Claude Sessions' in your Applications folder."
+    echo "Installed! You can find 'Evertusk' in your Applications folder."
   else
     echo "App built at:"
     echo "  $APP_PATH"
     [ -n "$DMG_PATH" ] && echo "  $DMG_PATH"
     echo ""
-    echo "To install manually, drag 'Claude Sessions.app' to /Applications."
+    echo "To install manually, drag 'Evertusk.app' to /Applications."
   fi
 else
   echo "App built at:"

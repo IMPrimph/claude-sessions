@@ -2,7 +2,9 @@
 set -euo pipefail
 
 REPO="IMPrimph/claude-sessions"
-APP_NAME="Claude Sessions"
+APP_NAME="Evertusk"
+# Installs from before the rename used this bundle name; replace it instead of leaving two apps.
+LEGACY_APP_NAME="Claude Sessions"
 
 echo "=== $APP_NAME - Installer ==="
 echo ""
@@ -30,7 +32,7 @@ fi
 # Get latest release DMG URL matching architecture
 echo "Fetching latest release for $ARCH..."
 DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" \
-  | grep "browser_download_url.*${ARCH_FILTER}.*\.dmg" \
+  | grep -E "browser_download_url.*(universal|${ARCH_FILTER}).*\.dmg" \
   | head -1 \
   | cut -d '"' -f 4)
 
@@ -54,9 +56,7 @@ curl -L --progress-bar -o "$DMG_PATH" "$DOWNLOAD_URL"
 echo "Installing..."
 MOUNT_POINT=$(hdiutil attach "$DMG_PATH" -nobrowse | tail -1 | awk -F'\t' '{print $NF}')
 
-if [ -d "/Applications/$APP_NAME.app" ]; then
-  rm -rf "/Applications/$APP_NAME.app"
-fi
+rm -rf "/Applications/$APP_NAME.app" "/Applications/$LEGACY_APP_NAME.app"
 
 cp -r "$MOUNT_POINT/$APP_NAME.app" /Applications/
 

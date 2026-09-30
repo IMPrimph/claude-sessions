@@ -4,7 +4,7 @@
 // app's per-session "Export as Markdown" button.
 //
 // Usage:
-//   cargo run --bin export_all -- [output_dir]
+//   cargo run --example export_all -- [output_dir]
 // Default output_dir: ~/Documents/claude-sessions-export
 //
 // Output layout:
@@ -14,7 +14,7 @@
 // so most of the app's structs/commands are legitimately unused here.
 #![allow(dead_code)]
 
-#[path = "../commands.rs"]
+#[path = "../src/commands.rs"]
 mod commands;
 
 use commands::SessionInfo;

@@ -44,7 +44,7 @@
     onToggleSave?: () => void;
   } = $props();
 
-  let stats: SessionStats | null = $state(null);
+  let stats = $state<SessionStats | null>(null);
   let statsLoaderGeneration = 0;
 
   // Stats stays as an inline header panel (small numbers, low-volume).

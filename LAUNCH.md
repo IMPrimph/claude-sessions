@@ -1,4 +1,4 @@
-# Claude Sessions — Launch Kit
+# Evertusk — Launch Kit
 
 Brand: **amber "kept"** · Positioning: **"Keep your Claude Code history. Nothing expires."**
 
@@ -6,7 +6,7 @@ Brand: **amber "kept"** · Positioning: **"Keep your Claude Code history. Nothin
 
 ## 1. The one-liner (use everywhere)
 
-> **Claude Code deletes your session history after 30 days. Claude Sessions keeps the ones you care about — searchable, local, forever.**
+> **Claude Code deletes your session history after 30 days. Evertusk keeps the ones you care about — searchable, local, forever.**
 
 Short forms:
 - **Never lose a session.**
@@ -30,7 +30,7 @@ Use this verbatim as the opening of the HN comment, the tweet, and the Reddit bo
 ## 3. Show HN
 
 **Title:**
-`Show HN: Claude Sessions – Claude Code deletes your history after 30 days; keep it`
+`Show HN: Evertusk – Claude Code deletes your history after 30 days; keep it`
 
 **Body:**
 ```
@@ -38,7 +38,7 @@ Claude Code stores every session as a local JSONL file, then deletes them after
 ~30 days (cleanupPeriodDays). Most people don't realize it until a session they
 wanted is just... gone — transcript, tool calls, pasted images, all of it.
 
-Claude Sessions is a small, local desktop app (Tauri + Rust + Svelte) that:
+Evertusk is a small, local desktop app (Tauri + Rust + Svelte) that:
 
 - Browses every session across every project, with search and keyboard nav
 - Surfaces things the raw logs bury: mid-turn interrupts, the option you picked
@@ -47,7 +47,7 @@ Claude Sessions is a small, local desktop app (Tauri + Rust + Svelte) that:
   survives the 30-day cleanup. Bookmarks to expired sessions still open.
 
 Everything stays on your machine — no server, no account, nothing uploaded.
-Free and open source. macOS build + `brew` coming.
+Free and source-available (FSL). macOS build + `brew` coming.
 
 I'd love feedback on what else you wish you could recover from your Claude Code
 history.
@@ -90,7 +90,7 @@ Claude Code writes every session as JSONL under ~/.claude/projects and... that's
 browse them, search across projects, or see what actually happened — and it quietly deletes them
 after ~30 days (cleanupPeriodDays).
 
-So I built Claude Sessions (Tauri/Rust/Svelte, 100% local):
+So I built Evertusk (Tauri/Rust/Svelte, 100% local):
 
 - Browse every session across every project; global search + in-session Cmd+F, keyboard nav,
   handles 500k-token sessions fine
@@ -100,7 +100,7 @@ So I built Claude Sessions (Tauri/Rust/Svelte, 100% local):
 - Save a session -> copied locally so it survives the 30-day cleanup
 - Export to Markdown, bookmarks, dark/light/bright
 
-No server, no account, nothing uploaded. Free + open source. Would love feedback on what else you
+No server, no account, nothing uploaded. Free + source-available. Would love feedback on what else you
 wish you could dig out of your history.
 
 [repo] · [demo]
@@ -117,13 +117,13 @@ If you use Claude Code a lot, your whole history lives as JSONL files you can't 
 it's deleted after ~30 days. I wanted to actually revisit my work: find that session where I
 solved X, see which files a run touched, re-read a subagent's output.
 
-So I made Claude Sessions — a desktop app that reads straight from ~/.claude (no cloud, no account):
+So I made Evertusk — a desktop app that reads straight from ~/.claude (no cloud, no account):
 
 - Search across all sessions and projects; per-session stats (tokens, tools, models)
 - See the stuff the logs hide: mid-turn corrections, the answer you picked in a prompt, artifacts
   you published, fork lineage
 - Save/bookmark a session so it never expires
-- Free + open source, everything stays on your machine
+- Free + source-available, everything stays on your machine
 
 [link] · [demo] — feedback welcome.
 ```
@@ -147,7 +147,7 @@ cleanup. Even bookmarks to already-expired sessions still open.
 4/ It also surfaces what the raw logs bury: mid-turn interrupts, the option you
 picked in a question prompt, published artifacts, fork/branch lineage.
 
-5/ 100% local. No server, no account, nothing uploaded. Free + open source.
+5/ 100% local. No server, no account, nothing uploaded. Free + source-available.
 Grab it 👉 [link] ⭐ if it saves you a session.
 
 ---
