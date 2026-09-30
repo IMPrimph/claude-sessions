@@ -1466,7 +1466,7 @@ pub fn get_session_stats(jsonl_path: String) -> Result<SessionStats, String> {
         .into_iter()
         .map(|(name, count)| ToolCount { name, count })
         .collect();
-    tool_pairs.sort_by(|a, b| b.count.cmp(&a.count));
+    tool_pairs.sort_by_key(|tool| std::cmp::Reverse(tool.count));
     stats.tool_counts = tool_pairs;
 
     Ok(stats)
