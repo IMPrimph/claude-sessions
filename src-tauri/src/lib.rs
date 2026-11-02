@@ -13,14 +13,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_projects,
+            commands::get_read_problems,
+            commands::existing_folders,
             commands::scan_projects,
             commands::get_session_messages,
-            commands::get_project_tokens,
             commands::get_session_stats,
             commands::export_session_markdown,
             commands::list_subagents,
             commands::get_subagent_messages,
             commands::get_tool_results,
+            commands::get_tool_result_images,
             commands::get_session_questions,
             commands::get_session_artifacts,
             commands::archive_session,
@@ -31,10 +33,14 @@ pub fn run() {
             commands::set_archive_location,
             commands::reset_archive_location,
             commands::open_archive_location,
+            commands::open_external_url,
             commands::read_tool_output_file,
             commands::get_session_file_changes,
             commands::global_search,
             commands::get_image_path,
+            commands::get_tool_input,
+            commands::read_local_image,
+            commands::reveal_in_finder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

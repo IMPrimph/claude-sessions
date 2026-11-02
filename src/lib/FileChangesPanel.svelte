@@ -4,18 +4,27 @@
 
   let {
     changes,
-    onClose,
+    toolName,
   }: {
     changes: FileChange[];
-    onClose: () => void;
+    toolName: string;
   } = $props();
 
   let editedOnly = $state(true);
 
-  let editedFiles = $derived(changes.filter((change) => change.edit_count > 0));
-  let totalEdits = $derived(editedFiles.reduce((sum, change) => sum + change.edit_count, 0));
+  function failedCount(change: FileChange): number {
+    return change.edits.filter((edit) => edit.failed).length;
+  }
 
-  let visible = $derived(editedOnly ? editedFiles : changes);
+  let editedFiles = $derived(changes.filter((change) => change.edit_count > 0));
+  // edit_count also counts edits that were rejected, which changed nothing.
+  let failedEdits = $derived(editedFiles.reduce((sum, change) => sum + failedCount(change), 0));
+  let totalEdits = $derived(editedFiles.reduce((sum, change) => sum + change.edit_count, 0) - failedEdits);
+  let changedFileCount = $derived(editedFiles.filter((change) => failedCount(change) < change.edits.length).length);
+  let readOnlyCount = $derived(changes.length - editedFiles.length);
+
+  // With nothing edited, the files that were read are the whole story.
+  let visible = $derived(editedOnly && editedFiles.length > 0 ? editedFiles : changes);
 
   // Accordion: only one file expanded at a time. Matches the "see one, close, move
   // to the next" workflow users expect when scanning a session's file changes.
@@ -41,13 +50,8 @@
       const first = currentVisible[0];
       if (lastInitPath === first.path) return;
       lastInitPath = first.path;
-      expandedPath = first.path;
-      if (first.edits.length > 0) {
-        const key = editKey(first.path, 0);
-        if (!expandedEdits.has(key)) {
-          expandedEdits = new Set([...expandedEdits, key]);
-        }
-      }
+      // Everything starts closed, so a session's whole list of files can be scanned at once.
+      expandedPath = null;
     });
   });
 
@@ -73,6 +77,20 @@
     }
   }
 
+  function allEditsOpen(change: FileChange): boolean {
+    return [...change.edits.keys()].every((index) => expandedEdits.has(editKey(change.path, index)));
+  }
+
+  function toggleAllEdits(change: FileChange) {
+    const open = !allEditsOpen(change);
+    const next = new Set(expandedEdits);
+    for (const index of change.edits.keys()) {
+      if (open) next.add(editKey(change.path, index));
+      else next.delete(editKey(change.path, index));
+    }
+    expandedEdits = next;
+  }
+
   function editKey(path: string, index: number): string {
     return `${path}::${index}`;
   }
@@ -89,10 +107,14 @@
     switch (action) {
       case "write":
         return "Write";
+      case "delete":
+        return "Delete";
       case "multiedit":
         return "MultiEdit";
       case "notebookedit":
         return "Notebook";
+      case "bash":
+        return "Bash";
       default:
         return "Edit";
     }
@@ -100,31 +122,98 @@
 
   function formatTime(iso: string | null): string {
     if (!iso) return "";
-    return new Date(iso).toLocaleTimeString([], {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     });
   }
 
-  // Long content (old/new strings) gets a height cap with a "Show full" toggle
-  const MAX_LINES = 24;
-  function maybeTruncate(text: string | null, expandedFull: boolean): {
-    text: string;
-    truncated: boolean;
-    totalLines: number;
-  } {
-    if (!text) return { text: "", truncated: false, totalLines: 0 };
-    const lines = text.split("\n");
-    const totalLines = lines.length;
-    if (expandedFull || totalLines <= MAX_LINES) {
-      return { text, truncated: false, totalLines };
+  // ── Line diff ──
+
+  type DiffLine = { kind: "same" | "add" | "del"; text: string };
+
+  // ponytail: past this the table costs too much, so the block shows as all removed then all
+  // added. Move to Myers if a real edit that size needs a precise diff.
+  const MAX_DIFF_CELLS = 1_000_000;
+
+  // Longest common subsequence of the lines left after trimming what both ends share.
+  function diffLines(oldText: string | null, newText: string | null): DiffLine[] {
+    const oldLines = oldText ? oldText.split("\n") : [];
+    const newLines = newText ? newText.split("\n") : [];
+    let start = 0;
+    while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start++;
+    let oldEnd = oldLines.length;
+    let newEnd = newLines.length;
+    while (oldEnd > start && newEnd > start && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+      oldEnd--;
+      newEnd--;
     }
-    return {
-      text: lines.slice(0, MAX_LINES).join("\n") + "\n…",
-      truncated: true,
-      totalLines,
-    };
+    const removed = oldLines.slice(start, oldEnd);
+    const added = newLines.slice(start, newEnd);
+    const same = (text: string): DiffLine => ({ kind: "same", text });
+    const del = (text: string): DiffLine => ({ kind: "del", text });
+    const add = (text: string): DiffLine => ({ kind: "add", text });
+    const middle: DiffLine[] = [];
+    if (removed.length * added.length > MAX_DIFF_CELLS) {
+      middle.push(...removed.map(del), ...added.map(add));
+    } else {
+      const width = added.length + 1;
+      const common = new Uint32Array((removed.length + 1) * width);
+      for (let row = removed.length - 1; row >= 0; row--) {
+        for (let column = added.length - 1; column >= 0; column--) {
+          common[row * width + column] =
+            removed[row] === added[column]
+              ? common[(row + 1) * width + column + 1] + 1
+              : Math.max(common[(row + 1) * width + column], common[row * width + column + 1]);
+        }
+      }
+      let row = 0;
+      let column = 0;
+      while (row < removed.length || column < added.length) {
+        if (row < removed.length && column < added.length && removed[row] === added[column]) {
+          middle.push(same(removed[row]));
+          row++;
+          column++;
+        } else if (row < removed.length && (column === added.length || common[(row + 1) * width + column] >= common[row * width + column + 1])) {
+          middle.push(del(removed[row]));
+          row++;
+        } else {
+          middle.push(add(added[column]));
+          column++;
+        }
+      }
+    }
+    return [...oldLines.slice(0, start).map(same), ...middle, ...oldLines.slice(oldEnd).map(same)];
   }
+
+  // Every row shows counts, so a session's diffs get worked out on first paint. Once each.
+  const editDiffs = new WeakMap<FileEditEntry, DiffLine[]>();
+  function editDiff(edit: FileEditEntry): DiffLine[] {
+    let diff = editDiffs.get(edit);
+    if (!diff) {
+      diff = diffLines(edit.old_string, edit.new_string);
+      editDiffs.set(edit, diff);
+    }
+    return diff;
+  }
+
+  function diffCounts(edits: FileEditEntry[]): { added: number; removed: number } {
+    const counts = { added: 0, removed: 0 };
+    for (const edit of edits) {
+      if (edit.failed) continue;
+      for (const line of editDiff(edit)) {
+        if (line.kind === "add") counts.added++;
+        else if (line.kind === "del") counts.removed++;
+      }
+    }
+    return counts;
+  }
+
+  // Long diffs get a height cap with a "Show full" toggle.
+  const MAX_LINES = 24;
+  const GUTTER: Record<DiffLine["kind"], string> = { same: "", add: "+", del: "\u2212" };
 
   let expandedFullSet = $state(new Set<string>());
 
@@ -138,69 +227,53 @@
     else next.add(key);
     expandedFullSet = next;
   }
-
-  // Short label for the sticky header (just the filename without path prefix)
-  function fileBaseName(displayPath: string): string {
-    const slash = displayPath.lastIndexOf("/");
-    return slash === -1 ? displayPath : displayPath.slice(slash + 1);
-  }
-
-  function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-    }
-  }
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
 <aside class="file-changes-panel">
-  <header class="changes-header">
-    <div class="changes-title-row">
-      <span class="changes-tag">FILE CHANGES</span>
-      <button class="close-btn" onclick={onClose} title="Close (Esc)" aria-label="Close panel">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
-      </button>
-    </div>
-    <div class="changes-summary">
-      {#if changes.length === 0}
-        No file operations in this session
-      {:else}
-        {editedFiles.length} {editedFiles.length === 1 ? "file" : "files"} edited
-        {#if totalEdits > 0} &middot; {totalEdits} {totalEdits === 1 ? "edit" : "edits"} total{/if}
-        {#if !editedOnly && changes.length !== editedFiles.length}
-          &middot; {changes.length - editedFiles.length} read-only
+  {#if changes.length > 0}
+    <header class="changes-header">
+      <div class="changes-summary">
+        {#if changedFileCount === 0}
+          No files edited
+        {:else}
+          {changedFileCount} {changedFileCount === 1 ? "file" : "files"} edited &middot; {totalEdits} {totalEdits === 1 ? "edit" : "edits"}
         {/if}
+        {#if failedEdits > 0}
+          &middot; {failedEdits} not applied
+        {/if}
+        {#if readOnlyCount > 0}
+          &middot; {readOnlyCount} {readOnlyCount === 1 ? "file" : "files"} only read
+        {/if}
+      </div>
+      {#if editedFiles.length > 0 && readOnlyCount > 0}
+        <div class="filter-row">
+          <button
+            class="filter-chip"
+            class:filter-active={editedOnly}
+            aria-pressed={editedOnly}
+            onclick={() => (editedOnly = !editedOnly)}
+          >
+            Edited only
+          </button>
+        </div>
       {/if}
-    </div>
-    <div class="filter-row">
-      <button
-        class="filter-chip"
-        class:filter-active={editedOnly}
-        onclick={() => (editedOnly = !editedOnly)}
-      >
-        Edited only
-      </button>
-    </div>
-  </header>
+    </header>
+  {/if}
 
   <div class="changes-scroll">
     {#if visible.length === 0}
       <div class="empty-state">
-        {#if changes.length === 0}
-          Nothing edited or read in this session.
-        {:else}
-          No edited files. Toggle the filter to see read-only files.
-        {/if}
+        {toolName} didn't edit or read any files in this session.
       </div>
     {:else}
       {#each visible as change (change.path)}
         {@const isOpenFile = expandedPath === change.path}
+        {@const fileCounts = diffCounts(change.edits)}
         <div class="file-block" class:file-block-open={isOpenFile}>
           <button
             class="file-row"
             class:file-row-open={isOpenFile}
+            aria-expanded={isOpenFile}
             onclick={() => toggleFile(change.path, change)}
             title={change.path}
           >
@@ -214,8 +287,14 @@
               stroke="currentColor"
               stroke-width="2.5"
             ><path d="m9 18 6-6-6-6"/></svg>
-            <span class="file-path">{change.display_path}</span>
+            <span class="file-path" title={change.path}>{change.display_path.split("/").pop()}<span class="file-folder">{change.display_path.split("/").slice(0, -1).join("/")}</span></span>
             <span class="file-badges">
+              {#if failedCount(change) > 0}
+                <span class="edit-failed">{failedCount(change) === change.edits.length ? "Not applied" : `${failedCount(change)} not applied`}</span>
+              {/if}
+              {#if fileCounts.added > 0 || fileCounts.removed > 0}
+                <span class="diff-stat"><span class="stat-added">+{fileCounts.added}</span> <span class="stat-removed">{GUTTER.del}{fileCounts.removed}</span></span>
+              {/if}
               {#if change.edit_count > 0}
                 <span class="badge badge-edit">Edit&times;{change.edit_count}</span>
               {/if}
@@ -227,15 +306,21 @@
 
           {#if isOpenFile}
             {#if change.edits.length === 0 && change.read_count > 0}
-              <div class="read-only-note">Read-only — no content changes.</div>
+              <div class="read-only-note">This file was only read, not changed.</div>
             {:else}
               <div class="edits-list">
+                {#if change.edits.length > 1}
+                  <button class="show-full-btn toggle-all-edits" onclick={() => toggleAllEdits(change)}>
+                    {allEditsOpen(change) ? "Collapse all edits" : `Expand all ${change.edits.length} edits`}
+                  </button>
+                {/if}
                 {#each change.edits as edit, index (`${change.path}::${index}`)}
                   {@const editEx = expandedEdits.has(editKey(change.path, index))}
                   {@const fkey = fullKey(change.path, index)}
                   {@const showFull = expandedFullSet.has(fkey)}
+                  {@const editCounts = diffCounts([edit])}
                   <div class="edit-block" class:edit-block-open={editEx}>
-                    <button class="edit-header" onclick={() => toggleEdit(change.path, index)}>
+                    <button class="edit-header" aria-expanded={editEx} onclick={() => toggleEdit(change.path, index)}>
                       <svg
                         class="chevron"
                         class:rotated={editEx}
@@ -246,7 +331,12 @@
                         stroke="currentColor"
                         stroke-width="2.5"
                       ><path d="m9 18 6-6-6-6"/></svg>
-                      <span class="edit-action edit-action-{edit.action}">{actionLabel(edit.action)}</span>
+                      <span class="edit-action">{actionLabel(edit.action)}</span>
+                      {#if edit.failed}
+                        <span class="edit-failed">Not applied</span>
+                      {:else if editCounts.added > 0 || editCounts.removed > 0}
+                        <span class="diff-stat"><span class="stat-added">+{editCounts.added}</span> <span class="stat-removed">{GUTTER.del}{editCounts.removed}</span></span>
+                      {/if}
                       {#if edit.replace_all}
                         <span class="edit-replace-all">replace all</span>
                       {/if}
@@ -256,33 +346,21 @@
                       {/if}
                     </button>
                     {#if editEx}
+                      {@const diff = editDiff(edit)}
                       <div class="edit-body">
-                        {#if edit.old_string}
-                          {@const oldText = maybeTruncate(edit.old_string, showFull)}
-                          <div class="diff-block diff-old">
-                            <pre>{oldText.text}</pre>
-                            {#if oldText.truncated && !showFull}
-                              <button class="show-full-btn" onclick={() => toggleFull(fkey)}>
-                                Show full ({oldText.totalLines} lines)
-                              </button>
-                            {/if}
+                        {#if diff.length === 0}
+                          <div class="read-only-note">No content was recorded for this edit.</div>
+                        {:else}
+                          <div class="diff-block" class:diff-failed={edit.failed}>
+                            {#each showFull ? diff : diff.slice(0, MAX_LINES) as line}
+                              <div class="diff-line diff-{line.kind}"><span class="diff-gutter">{GUTTER[line.kind]}</span><span class="diff-text">{line.text}</span></div>
+                            {/each}
                           </div>
-                        {/if}
-                        {#if edit.new_string}
-                          {@const newText = maybeTruncate(edit.new_string, showFull)}
-                          <div class="diff-block diff-new">
-                            <pre>{newText.text}</pre>
-                            {#if newText.truncated && !showFull}
-                              <button class="show-full-btn" onclick={() => toggleFull(fkey)}>
-                                Show full ({newText.totalLines} lines)
-                              </button>
-                            {/if}
-                          </div>
-                        {/if}
-                        {#if showFull && (edit.old_string || edit.new_string)}
-                          <button class="show-full-btn collapse" onclick={() => toggleFull(fkey)}>
-                            Collapse
-                          </button>
+                          {#if diff.length > MAX_LINES}
+                            <button class="show-full-btn" onclick={() => toggleFull(fkey)}>
+                              {showFull ? "Show less" : `Show full (${diff.length} lines)`}
+                            </button>
+                          {/if}
                         {/if}
                       </div>
                     {/if}
@@ -301,56 +379,17 @@
   .file-changes-panel {
     display: flex;
     flex-direction: column;
-    height: 100%;
-    width: 580px;
-    min-width: 420px;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
     background: var(--bg-app);
-    border-left: 1px solid var(--border);
-    flex-shrink: 0;
   }
 
   .changes-header {
-    padding: 14px 18px 12px;
+    padding: 12px 24px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-panel);
     flex-shrink: 0;
-  }
-
-  .changes-title-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 6px;
-  }
-
-  .changes-tag {
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--accent-hover);
-    background: rgba(99, 102, 241, 0.12);
-    border: 1px solid rgba(99, 102, 241, 0.28);
-    padding: 2px 8px;
-    border-radius: 999px;
-    letter-spacing: 0.06em;
-  }
-
-  .close-btn {
-    background: var(--border);
-    border: none;
-    color: var(--text-secondary);
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.12s;
-  }
-
-  .close-btn:hover {
-    background: var(--border-strong);
-    color: var(--text-primary);
   }
 
   .changes-summary {
@@ -366,10 +405,11 @@
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     padding: 3px 9px;
     border-radius: 5px;
+    min-height: 24px;
     cursor: pointer;
     transition: all 0.12s;
   }
@@ -380,9 +420,9 @@
   }
 
   .filter-chip.filter-active {
-    background: rgba(99, 102, 241, 0.18);
-    color: var(--accent-text);
-    border-color: rgba(99, 102, 241, 0.4);
+    background: var(--bg-selected);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
   }
 
   .changes-scroll {
@@ -407,7 +447,7 @@
   }
 
   .file-block-open {
-    border-color: rgba(99, 102, 241, 0.3);
+    border-color: var(--border-strong);
   }
 
   /* Sticky file header: when you scroll inside an expanded file's edits, the
@@ -437,7 +477,7 @@
 
   .file-row-open {
     background: var(--bg-elevated);
-    box-shadow: 0 1px 0 rgba(99, 102, 241, 0.2);
+    box-shadow: 0 1px 0 var(--border-strong);
   }
 
   .chevron {
@@ -448,7 +488,13 @@
 
   .chevron.rotated {
     transform: rotate(90deg);
-    color: var(--accent-bright);
+    color: var(--text-primary);
+  }
+
+  /* Name first: on a long path, end truncation would otherwise hide the part you want. */
+  .file-folder {
+    margin-left: 8px;
+    color: var(--text-muted);
   }
 
   .file-path {
@@ -471,21 +517,36 @@
 
   .badge {
     font-family: "SF Mono", "Fira Code", monospace;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     padding: 2px 7px;
     border-radius: 10px;
   }
 
   .badge-edit {
-    background: rgba(245, 158, 11, 0.14);
-    color: #fbbf24;
+    background: var(--bg-selected);
+    color: var(--text-secondary);
   }
 
   .badge-read {
-    background: rgba(99, 102, 241, 0.1);
-    color: var(--accent-hover);
-    opacity: 0.7;
+    background: var(--bg-selected);
+    color: var(--text-secondary);
+  }
+
+  .diff-stat {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .stat-added { color: var(--ok); }
+  .stat-removed { color: var(--danger); }
+
+  .edit-failed {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--danger);
+    white-space: nowrap;
   }
 
   .read-only-note {
@@ -497,6 +558,10 @@
 
   .edits-list {
     padding: 4px 0;
+  }
+
+  .toggle-all-edits {
+    margin: 4px 0 8px 14px;
   }
 
   .edit-block {
@@ -519,11 +584,11 @@
   }
 
   .edit-header:hover {
-    background: rgba(99, 102, 241, 0.05);
+    background: var(--bg-selected);
   }
 
   .edit-block-open .edit-header {
-    background: rgba(99, 102, 241, 0.04);
+    background: var(--bg-selected);
   }
 
   .edit-action {
@@ -531,45 +596,27 @@
     font-weight: 600;
     padding: 2px 7px;
     border-radius: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    font-size: 10px;
-  }
-
-  .edit-action-write {
-    background: rgba(34, 197, 94, 0.14);
-    color: #4ade80;
-  }
-
-  .edit-action-edit,
-  .edit-action-multiedit {
-    background: rgba(245, 158, 11, 0.14);
-    color: #fbbf24;
-  }
-
-  .edit-action-notebookedit {
-    background: rgba(168, 85, 247, 0.14);
-    color: #c084fc;
+    font-size: 12px;
+    background: var(--bg-selected);
+    color: var(--text-secondary);
   }
 
   .edit-replace-all {
-    font-size: 10px;
-    color: #c084fc;
-    background: rgba(168, 85, 247, 0.1);
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--bg-hover);
     padding: 1px 6px;
     border-radius: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   .edit-index {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-faint);
     font-family: "SF Mono", "Fira Code", monospace;
   }
 
   .edit-time {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-faint);
     margin-left: auto;
   }
@@ -581,47 +628,49 @@
   .diff-block {
     margin-top: 6px;
     border-radius: 6px;
-    overflow: hidden;
-    position: relative;
-  }
-
-  .diff-block pre {
-    margin: 0;
-    padding: 8px 12px;
+    overflow: hidden auto;
+    max-height: 360px;
+    padding: 6px 0;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
     font-family: "SF Mono", "Fira Code", monospace;
     font-size: 12px;
     line-height: 1.5;
+  }
+
+  .diff-line {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    min-height: 18px;
+  }
+
+  .diff-gutter {
+    text-align: center;
+    color: var(--text-muted);
+    user-select: none;
+  }
+
+  .diff-text {
+    padding-right: 10px;
     white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 360px;
-    overflow-y: auto;
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
   }
 
-  .diff-old {
-    background: rgba(239, 68, 68, 0.08);
-    border-left: 3px solid rgba(239, 68, 68, 0.5);
-  }
-
-  .diff-old pre {
-    color: #fca5a5;
-  }
-
-  .diff-new {
-    background: rgba(34, 197, 94, 0.08);
-    border-left: 3px solid rgba(34, 197, 94, 0.5);
-  }
-
-  .diff-new pre {
-    color: #86efac;
-  }
+  .diff-same .diff-text { color: var(--text-secondary); }
+  .diff-add { background: var(--ok-soft); }
+  .diff-add .diff-gutter { color: var(--ok); font-weight: 600; }
+  .diff-del { background: var(--danger-soft); }
+  .diff-del .diff-gutter { color: var(--danger); font-weight: 600; }
+  .diff-failed .diff-text { text-decoration: line-through; color: var(--text-secondary); }
 
   .show-full-btn {
-    margin-top: 4px;
-    margin-left: 12px;
+    margin-top: 6px;
+    min-height: 24px;
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     padding: 3px 10px;
     border-radius: 5px;
@@ -630,14 +679,9 @@
   }
 
   .show-full-btn:hover {
-    color: var(--accent-text);
-    border-color: rgba(99, 102, 241, 0.4);
-    background: rgba(99, 102, 241, 0.08);
-  }
-
-  .show-full-btn.collapse {
-    margin-top: 8px;
-    margin-left: 0;
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+    background: var(--bg-selected);
   }
 
   .changes-scroll::-webkit-scrollbar {
@@ -647,14 +691,5 @@
   .changes-scroll::-webkit-scrollbar-thumb {
     background: var(--border);
     border-radius: 4px;
-  }
-
-  .diff-block pre::-webkit-scrollbar {
-    width: 6px;
-  }
-
-  .diff-block pre::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 3px;
   }
 </style>

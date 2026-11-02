@@ -1,127 +1,94 @@
 ---
-import '../styles/global.css'
-import Analytics from '@vercel/analytics/astro'
-import fs from 'node:fs'
+import Base from '../layouts/Base.astro'
+import { AUTHOR, DOWNLOAD_MAC, GITHUB_URL, INSTALLS, OG_IMAGE, SITE, VERSION } from '../site'
 
-const REPO = "IMPrimph/claude-sessions"
-const VERSION = "1.2.0"
-// Canonical production origin — every SEO/OG/sitemap URL derives from this one
-// value, so the site can be re-pointed by editing a single line.
-const SITE = "https://claude-sessions-blond.vercel.app"
-const OG_IMAGE = `${SITE}/og-image.png`
+const title = "Evertusk: every Claude Code and Codex session, in one place"
+const description = "Find past work across every Claude Code and Codex session. Search every message, see what changed, and keep what would expire. Free, local Mac app."
 
-// Real install count, read from the daily download snapshots at build time.
-let INSTALLS = 52
-try {
-  const snapshots = fs.readFileSync(new URL('../../../stats/downloads.jsonl', import.meta.url), 'utf-8').trim().split('\n')
-  INSTALLS = JSON.parse(snapshots[snapshots.length - 1]).total_installs
-} catch {}
-const DOWNLOAD_MAC = `https://github.com/${REPO}/releases/download/v${VERSION}/Evertusk_${VERSION}_universal.dmg`
-const GITHUB_URL = `https://github.com/${REPO}`
+const structuredData = {
+  "@context": "https://schema.org",
+  "@graph": [
+    { "@type": "WebSite", name: "Evertusk", url: SITE + "/", description },
+    {
+      "@type": "SoftwareApplication",
+      name: "Evertusk",
+      applicationCategory: "DeveloperApplication",
+      operatingSystem: "macOS 12 or later",
+      url: SITE + "/",
+      description: "A free Mac app for finding past work across Claude Code and Codex sessions: searchable, local, and kept after they would expire.",
+      image: OG_IMAGE,
+      screenshot: `${SITE}/demo-poster.webp`,
+      downloadUrl: DOWNLOAD_MAC,
+      softwareVersion: VERSION,
+      isAccessibleForFree: true,
+      license: `${GITHUB_URL}/blob/main/LICENSE.md`,
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      author: AUTHOR,
+      sameAs: [GITHUB_URL],
+    },
+  ],
+}
 
 const features = [
   {
-    title: "Nothing expires",
-    description: "Claude Code deletes sessions after 30 days. Bookmark or Save one and Evertusk keeps a full copy — transcript, images, everything — so it never disappears.",
-    icon: "save"
+    title: "One history across your tools",
+    description: "Claude Code and Codex sessions sit in one list, grouped by the folder you worked in. Each row shows its tool's icon, so you can tell them apart at a glance.",
   },
   {
-    title: "See what you steered",
-    description: "The corrections you made mid-response — interrupts and the messages you fired while Claude was still working — are surfaced, not buried in the raw logs.",
-    icon: "interrupt"
+    title: "Search every word",
+    description: "Find that fix from last month by what you remember: a title, an error, something you typed. Search looks through every message in every session.",
   },
   {
-    title: "The answer you picked",
-    description: "When Claude asked you a question, see exactly which option you chose — multi-select, custom answers, and your notes, all rendered inline.",
-    icon: "check"
+    title: "The whole session, as it happened",
+    description: "Thinking, tool calls and their output, subagents, pasted images, plans, the moment you interrupted, the option you picked when asked. Not a summary.",
   },
   {
-    title: "Every artifact, kept",
-    description: "Published an HTML artifact? It shows up as a card with the title and a copy-link — so the things you shipped are one click away, forever.",
-    icon: "artifact"
+    title: "What it did, at a glance",
+    description: "Every file a session changed with its edits, every agent it started, and how long it took and how many tokens it used.",
   },
   {
-    title: "Fork lineage",
-    description: "Branched a session? Evertusk shows which session it forked from and lets you jump straight to the parent. Your history stays connected.",
-    icon: "fork"
+    title: "Keep what would expire",
+    description: "Claude Code deletes sessions after 30 days by default. Save one and Evertusk keeps a full copy, with its images. Export any session to Markdown.",
   },
   {
-    title: "Local & private",
-    description: "Reads straight from ~/.claude. No servers, no account, nothing uploaded — ever. Your saved sessions live in a local folder you control.",
-    icon: "lock"
-  }
+    title: "Stays on your Mac",
+    description: "Reads ~/.claude and ~/.codex directly. No account, no server, nothing uploaded. The only thing it asks the internet for is app updates.",
+  },
+]
+
+// Written out on the page rather than as FAQPage markup: Google removed FAQ rich results in 2026.
+const questions = [
+  {
+    question: "What is Evertusk?",
+    answer: "Evertusk is a free Mac app for reading and searching your Claude Code and Codex sessions. It reads the session files those tools already keep on your Mac and shows them in one list, grouped by project folder.",
+  },
+  {
+    question: "Does Claude Code delete old sessions?",
+    answer: `Yes. By default Claude Code deletes session transcripts after 30 days, without showing a message. You can change that with the <code>cleanupPeriodDays</code> setting. <a href="/claude-code-session-history/">How the cleanup works</a>.`,
+  },
+  {
+    question: "Where are Claude Code and Codex sessions stored?",
+    answer: `Claude Code keeps them in <code>~/.claude/projects</code>, and <a href="/codex-session-history/">Codex keeps them in <code>~/.codex/sessions</code></a>. Evertusk finds both on its own, so there's nothing to configure.`,
+  },
+  {
+    question: "Does Evertusk upload my sessions?",
+    answer: `No. There's no account and no server, and your sessions stay on your Mac. The only thing the app asks the internet for is whether there's an update. <a href="/privacy/">What it reads and writes</a>.`,
+  },
+  {
+    question: "Does it work the same for Codex?",
+    answer: "Mostly. Browsing, search, changed files, agents and Markdown export work for both. Saving a separate copy is for Claude Code only, since that's where the 30-day cleanup applies. Codex doesn't record cost, and its thinking is often encrypted.",
+  },
+  {
+    question: "Which Macs does it run on, and what does it cost?",
+    answer: `It's free, and it runs on macOS 12 or later on Apple Silicon and Intel. The app isn't signed by Apple yet, so the first launch needs the one Terminal command at the top of this page. The <a href="${GITHUB_URL}">source is available</a> under the FSL-1.1-MIT license.`,
+  },
 ]
 ---
 
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
-    <link rel="icon" href="/favicon.ico" sizes="32x32" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#08080f" />
-
-    <!-- SEO -->
-    <title>Evertusk — Keep your Claude Code history before it expires</title>
-    <meta name="description" content="Claude Code deletes your session history after 30 days. Evertusk is a free, source-available macOS app that keeps the sessions you care about — searchable, local, and forever. Nothing uploaded." />
-    <meta name="keywords" content="Claude Code, Claude Code session history, session viewer, session browser, Claude Code backup, desktop app, Claude AI, Anthropic, developer tools, Tauri, macOS" />
-    <meta name="author" content="IMPrimph" />
-    <meta name="robots" content="index, follow, max-image-preview:large" />
-    <link rel="canonical" href={SITE + "/"} />
-
-    <!-- Open Graph -->
-    <meta property="og:type" content="website" />
-    <meta property="og:title" content="Evertusk — Keep your Claude Code history before it expires" />
-    <meta property="og:description" content="Claude Code deletes your session history after 30 days. Evertusk keeps the ones you care about — searchable, local, and forever. Free &amp; source-available." />
-    <meta property="og:url" content={SITE + "/"} />
-    <meta property="og:image" content={OG_IMAGE} />
-    <meta property="og:image:type" content="image/png" />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Evertusk — Claude Code forgets. You won't." />
-    <meta property="og:site_name" content="Evertusk" />
-    <meta property="og:locale" content="en_US" />
-
-    <!-- Twitter -->
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Evertusk — Keep your Claude Code history before it expires" />
-    <meta name="twitter:description" content="Claude Code deletes your session history after 30 days. Evertusk keeps the ones you care about — searchable, local, and forever." />
-    <meta name="twitter:image" content={OG_IMAGE} />
-    <meta name="twitter:image:alt" content="Evertusk — Claude Code forgets. You won't." />
-
-    <!-- Structured data: rich results eligibility (SoftwareApplication) -->
-    <script type="application/ld+json" set:html={JSON.stringify({
-      "@context": "https://schema.org",
-      "@type": "SoftwareApplication",
-      "name": "Evertusk",
-      "applicationCategory": "DeveloperApplication",
-      "operatingSystem": "macOS",
-      "url": SITE + "/",
-      "description": "A free, source-available macOS app that keeps your Claude Code session history before it expires — searchable, local, and forever.",
-      "image": OG_IMAGE,
-      "downloadUrl": DOWNLOAD_MAC,
-      "softwareVersion": VERSION,
-      "isAccessibleForFree": true,
-      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-      "author": { "@type": "Person", "name": "IMPrimph", "url": GITHUB_URL }
-    })} />
-
-    <!-- Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-
-    <!-- Vercel Web Analytics — cookieless, no PII. Enable it in the Vercel dashboard
-         (Analytics tab → Enable) for these events to be recorded. -->
-    <Analytics />
-  </head>
-  <body class="bg-[#08080f] text-[#c8c8e0] antialiased overflow-x-hidden">
-
+<Base {title} {description} path="/" {structuredData}>
     <!-- Non-dismissable yellow alert at the very top - first thing every visitor sees -->
-    <div class="relative z-50 bg-amber-400 text-[#1a1100] border-b border-amber-500/60">
-      <div class="max-w-6xl mx-auto px-6 py-3 flex items-start sm:items-center gap-3 text-sm">
+    <div slot="top" class="relative z-50 bg-amber-400 text-[#1a1100] border-b border-amber-500/60">
+      <div class="max-w-[1296px] mx-auto px-6 py-3 flex items-start sm:items-center gap-3 text-sm">
         <svg class="flex-shrink-0 mt-0.5 sm:mt-0" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
           <line x1="12" y1="9" x2="12" y2="13"/>
@@ -135,186 +102,95 @@ const features = [
       </div>
     </div>
 
-    <!-- Ambient glow background -->
-    <div class="fixed inset-0 pointer-events-none overflow-hidden">
-      <div class="absolute top-[-30%] left-[20%] w-[600px] h-[600px] bg-amber-500/[0.08] rounded-full blur-[150px]"></div>
-      <div class="absolute bottom-[-20%] right-[10%] w-[500px] h-[500px] bg-amber-600/[0.05] rounded-full blur-[150px]"></div>
-    </div>
-
-    <!-- Nav -->
-    <nav class="relative z-10 flex items-center justify-between max-w-6xl mx-auto px-6 py-6">
-      <div class="flex items-center gap-3">
-        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-[#26262b] to-[#0c0c0e] border border-white/5 flex items-center justify-center shadow-lg">
-          <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
-            <path d="M9 8.2C5 6.4 2.2 9 2.8 13.2c.5 3.5 3.4 4.8 6 3.6z" fill="#f59e0b"/>
-            <path d="M23 8.2c4-1.8 6.8.8 6.2 5c-.5 3.5-3.4 4.8-6 3.6z" fill="#f59e0b"/>
-            <path d="M16 6C10.8 6 8 9.4 8 13.8S10.8 21 16 21s8-2.8 8-7.2S21.2 6 16 6z" fill="#f59e0b"/>
-            <path d="M13.7 18.5h4.6v6.1c0 1.6-1.1 2.5-2.3 2.5s-2.3-.9-2.3-2.5z" fill="#f59e0b"/>
-            <circle cx="12.9" cy="13.3" r="1.2" fill="#241304"/>
-            <circle cx="19.1" cy="13.3" r="1.2" fill="#241304"/>
-          </svg>
-        </div>
-        <span class="font-display font-bold text-lg text-white tracking-tight">Evertusk</span>
-      </div>
-      <span class="text-sm text-[#4a4a6a]">v{VERSION}</span>
-    </nav>
-
     <!-- Hero -->
-    <section class="relative z-10 max-w-6xl mx-auto px-6 pt-16 pb-8 text-center">
-      <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-xs text-amber-300 mb-8 animate-fade-in">
-        <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-        Claude Code deletes your sessions after 30 days
-      </div>
-
-      <h1 class="font-display font-bold text-5xl md:text-7xl text-white leading-[1.08] tracking-tight mb-6 animate-fade-in-up">
-        Claude Code forgets.<br/>
-        <span class="bg-gradient-to-r from-amber-200 via-amber-400 to-amber-500 bg-clip-text text-transparent">You won't.</span>
+    <section class="relative z-10 max-w-[1296px] mx-auto px-6 pt-14 pb-10">
+      <h1 class="font-display font-bold text-4xl md:text-6xl text-white leading-[1.08] tracking-tight mb-5 max-w-3xl text-balance animate-fade-in-up">
+        Every Claude Code and Codex session, in one place.
       </h1>
-
-      <p class="max-w-xl mx-auto text-lg text-[#8a8a9a] leading-relaxed mb-10 animate-fade-in-up-delay">
-        Your Claude Code history is deleted after 30 days — transcripts, tool calls, pasted screenshots, gone. Evertusk keeps the ones you care about: browse, search, and <span class="text-amber-300 font-medium">save</span> any session so it never expires. Completely local.
+      <p class="max-w-2xl text-lg text-[#a0a0a8] leading-relaxed mb-8 animate-fade-in-up-delay">
+        Evertusk is a free Mac app that puts your Claude Code and Codex history in one searchable list. Find the fix you made last month, see exactly what a session did, and keep the ones Claude Code would delete after 30 days.
       </p>
-
-      <div class="flex flex-col sm:flex-row items-center justify-center gap-3 mb-4 animate-fade-in-up-delay-2">
-        <a href={DOWNLOAD_MAC} class="group relative inline-flex items-center gap-3 px-7 py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 text-[#1a1100] font-semibold text-sm hover:from-amber-400 hover:to-amber-500 transition-all duration-300 shadow-[0_0_40px_rgba(245,158,11,0.3)] hover:shadow-[0_0_60px_rgba(245,158,11,0.45)]">
+      <div class="flex flex-wrap items-center gap-x-5 gap-y-3 animate-fade-in-up-delay-2">
+        <a href={DOWNLOAD_MAC} class="inline-flex items-center gap-3 px-6 py-3 rounded-lg bg-amber-500 text-[#1a1100] font-semibold text-sm hover:bg-amber-400 transition-colors">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Download free for Mac
         </a>
+        <span class="text-sm text-[#8a8a92]">macOS 12+ &middot; Apple Silicon &amp; Intel &middot; {INSTALLS}+ installs &middot; v{VERSION}</span>
       </div>
-
-      <p class="text-xs text-[#4a4a6a] animate-fade-in-up-delay-2 mb-5">
-        macOS 12+ &middot; Apple Silicon &amp; Intel &middot; No signup required
+      <p class="text-sm text-[#8a8a92] max-w-xl mt-4">
+        macOS may say <span class="text-[#c0c0c8]">"app is damaged"</span> on first launch, because the app isn't signed yet. The Terminal command at the top of this page fixes it.
       </p>
-
-      <p class="text-xs text-[#5a5a7a] max-w-md mx-auto animate-fade-in-up-delay-2">
-        macOS may say <span class="text-[#8a8aaa]">"app is damaged"</span> on first launch — that's normal for unsigned apps. The Terminal command at the top of this page fixes it in one step.
-      </p>
-
-      <!-- Social proof -->
-      <div class="flex items-center justify-center gap-5 mt-9 text-sm text-[#8a8a9a] animate-fade-in-up-delay-2">
-        <span><b class="text-white font-semibold">{INSTALLS}+</b> installs</span>
-        <span class="text-[#3a3a3a]">·</span>
-        <span class="inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>100% local</span>
-        <span class="text-[#3a3a3a]">·</span>
-        <span>Free &amp; source-available</span>
-      </div>
     </section>
 
-    <!-- Demo -->
-    <section class="relative z-10 max-w-5xl mx-auto px-6 py-14">
-      <div class="relative">
-        <div class="absolute -inset-10 bg-amber-500/[0.06] blur-[90px] rounded-full pointer-events-none"></div>
-        <div class="relative rounded-2xl overflow-hidden border border-[#2a2a2a] shadow-[0_30px_90px_rgba(0,0,0,0.55)] animate-fade-in-up-delay-3">
-          <video class="w-full block" src="/demo.mp4" poster="/demo-poster.png" autoplay muted loop playsinline></video>
+    <!-- The working app -->
+    <section id="try-it" class="relative z-10 max-w-[1296px] mx-auto px-6 pb-16 scroll-mt-6">
+      <figure>
+        <div class="demo-window relative rounded-xl overflow-hidden border border-[#2a2a2e] shadow-[0_24px_70px_rgba(0,0,0,0.5)]" data-demo="/demo/">
+          <img class="block w-full h-auto" src="/demo-poster.webp" width="2400" height="1520" fetchpriority="high" alt="Evertusk showing Claude Code and Codex sessions in one list, with a conversation open" />
         </div>
-      </div>
-      <p class="text-center text-sm text-[#6a6a8a] mt-5">Open it, browse your projects, and open a session — then scroll through everything it kept: the interrupt, the answer you picked, the artifact, the fork it came from.</p>
+        <figcaption class="demo-caption text-sm text-[#8a8a92] mt-4">Evertusk with made-up sessions. On a bigger screen, this is the working app to click around in.</figcaption>
+      </figure>
+      <script is:inline>
+        // The screenshot becomes the real app, on made-up sessions, where the app's window fits.
+        const demoWindow = document.querySelector("[data-demo]");
+        if (demoWindow && window.matchMedia("(min-width: 900px)").matches) {
+          const frame = document.createElement("iframe");
+          frame.src = demoWindow.dataset.demo;
+          frame.title = "A working demo of Evertusk, with made-up sessions";
+          frame.allow = "clipboard-write";
+          frame.addEventListener("load", () => {
+            demoWindow.querySelector("img")?.remove();
+            frame.classList.add("is-ready");
+            const caption = document.querySelector(".demo-caption");
+            caption.textContent = "This is the app, working. Click anything: the sessions are made up, and it runs entirely in your browser. ";
+            const fullSize = document.createElement("a");
+            fullSize.href = demoWindow.dataset.demo;
+            fullSize.textContent = "Open it full size";
+            caption.append(fullSize);
+          });
+          demoWindow.append(frame);
+        }
+      </script>
     </section>
 
-    <!-- Features -->
-    <section class="relative z-10 max-w-6xl mx-auto px-6 py-20">
-      <div class="text-center mb-16">
-        <h2 class="font-display font-bold text-3xl md:text-4xl text-white tracking-tight mb-4">
-          Everything your terminal doesn't show you
-        </h2>
-        <p class="text-[#6a6a8a] max-w-lg mx-auto">
-          Claude Code sessions disappear into JSONL logs. Evertusk makes them browsable, searchable, and useful.
-        </p>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+    <!-- What it does -->
+    <section class="relative z-10 max-w-[1296px] mx-auto px-6 py-16">
+      <h2 class="font-display font-bold text-3xl md:text-4xl text-white tracking-tight mb-10 max-w-2xl text-balance">
+        Your agents did the work. Now you can find it again.
+      </h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-x-14 border-t border-[#232327]">
         {features.map((feature) => (
-          <div class="group p-6 rounded-xl border border-[#1e1e1e] bg-[#0d0d0e] hover:border-amber-500/25 hover:bg-[#131311] transition-all duration-300">
-            <div class="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/15 flex items-center justify-center mb-4 group-hover:bg-amber-500/15 transition-all duration-300">
-              {feature.icon === "save" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.6"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>}
-              {feature.icon === "interrupt" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.6"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>}
-              {feature.icon === "check" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.6"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="10"/></svg>}
-              {feature.icon === "artifact" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M10 13l2 2 4-4"/></svg>}
-              {feature.icon === "fork" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>}
-              {feature.icon === "lock" && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.6"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>}
-            </div>
-            <h3 class="font-display font-semibold text-white text-base mb-2">{feature.title}</h3>
-            <p class="text-sm text-[#8a8a8a] leading-relaxed">{feature.description}</p>
+          <div class="py-6 border-b border-[#232327]">
+            <h3 class="font-display font-semibold text-white text-lg mb-1.5">{feature.title}</h3>
+            <p class="text-[#a0a0a8] leading-relaxed max-w-prose">{feature.description}</p>
           </div>
         ))}
       </div>
     </section>
 
-    <!-- How it works -->
-    <section class="relative z-10 max-w-4xl mx-auto px-6 py-20">
-      <div class="text-center mb-14">
-        <h2 class="font-display font-bold text-3xl md:text-4xl text-white tracking-tight mb-4">
-          Three seconds to get started
-        </h2>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-        <div class="text-center">
-          <div class="w-12 h-12 rounded-full border-2 border-amber-500/25 bg-[#141310] flex items-center justify-center mx-auto mb-4">
-            <span class="font-mono font-bold text-amber-400">1</span>
+    <!-- Questions -->
+    <section class="faq relative z-10 max-w-[1296px] mx-auto px-6 py-16">
+      <h2 class="font-display font-bold text-3xl md:text-4xl text-white tracking-tight mb-10">Common questions</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-x-14 gap-y-8">
+        {questions.map((item) => (
+          <div>
+            <h3 class="font-display font-semibold text-white text-lg mb-1.5">{item.question}</h3>
+            <p class="text-[#a0a0a8] leading-relaxed max-w-prose" set:html={item.answer} />
           </div>
-          <h3 class="font-display font-semibold text-white mb-2">Download</h3>
-          <p class="text-sm text-[#6a6a8a]">Grab the DMG for your Mac.</p>
-        </div>
-        <div class="text-center">
-          <div class="w-12 h-12 rounded-full border-2 border-amber-500/25 bg-[#141310] flex items-center justify-center mx-auto mb-4">
-            <span class="font-mono font-bold text-amber-400">2</span>
-          </div>
-          <h3 class="font-display font-semibold text-white mb-2">Open</h3>
-          <p class="text-sm text-[#6a6a8a]">Drag to Applications and launch. No signup, no config.</p>
-        </div>
-        <div class="text-center">
-          <div class="w-12 h-12 rounded-full border-2 border-amber-500/25 bg-[#141310] flex items-center justify-center mx-auto mb-4">
-            <span class="font-mono font-bold text-amber-400">3</span>
-          </div>
-          <h3 class="font-display font-semibold text-white mb-2">Browse</h3>
-          <p class="text-sm text-[#6a6a8a]">All your Claude Code sessions, instantly organized by project.</p>
-        </div>
+        ))}
       </div>
     </section>
 
-    <!-- CTA -->
-    <section class="relative z-10 max-w-3xl mx-auto px-6 py-20 text-center">
-      <div class="p-10 rounded-2xl border border-amber-500/15 bg-gradient-to-b from-[#14100a] to-[#0a0a0b] relative overflow-hidden">
-        <div class="absolute inset-0 bg-gradient-to-r from-amber-500/[0.06] to-amber-600/[0.03]"></div>
-        <div class="relative">
-          <h2 class="font-display font-bold text-2xl md:text-3xl text-white tracking-tight mb-4">
-            Don't let your best sessions expire
-          </h2>
-          <p class="text-[#8a8a8a] mb-8 max-w-md mx-auto">
-            Free, local, and source-available. Keep the Claude Code history that matters — before the 30-day clock runs out.
-          </p>
-          <div class="flex flex-col sm:flex-row items-center justify-center gap-3">
-            <a href={DOWNLOAD_MAC} class="inline-flex items-center gap-3 px-7 py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 text-[#1a1100] font-semibold text-sm hover:from-amber-400 hover:to-amber-500 transition-all duration-300 shadow-[0_0_40px_rgba(245,158,11,0.28)]">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              Download free for Mac
-            </a>
-          </div>
-        </div>
-      </div>
+    <!-- Get it -->
+    <section class="relative z-10 max-w-[1296px] mx-auto px-6 py-16">
+      <h2 class="font-display font-bold text-3xl md:text-4xl text-white tracking-tight mb-4">Nothing to set up</h2>
+      <p class="text-lg text-[#a0a0a8] max-w-2xl leading-relaxed mb-8">
+        Download it, drag it to Applications, and open it. There's no account and no configuration: your sessions are already there, because it reads the files your tools already keep.
+      </p>
+      <a href={DOWNLOAD_MAC} class="inline-flex items-center gap-3 px-6 py-3 rounded-lg bg-amber-500 text-[#1a1100] font-semibold text-sm hover:bg-amber-400 transition-colors">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download free for Mac
+      </a>
     </section>
 
-    <!-- Footer -->
-    <footer class="relative z-10 border-t border-[#1a1a2e] py-8 mt-8">
-      <div class="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-        <div class="flex items-center gap-3">
-          <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-[#26262b] to-[#0c0c0e] border border-white/5 flex items-center justify-center">
-            <svg width="17" height="17" viewBox="0 0 32 32" fill="none">
-              <path d="M9 8.2C5 6.4 2.2 9 2.8 13.2c.5 3.5 3.4 4.8 6 3.6z" fill="#f59e0b"/>
-              <path d="M23 8.2c4-1.8 6.8.8 6.2 5c-.5 3.5-3.4 4.8-6 3.6z" fill="#f59e0b"/>
-              <path d="M16 6C10.8 6 8 9.4 8 13.8S10.8 21 16 21s8-2.8 8-7.2S21.2 6 16 6z" fill="#f59e0b"/>
-              <path d="M13.7 18.5h4.6v6.1c0 1.6-1.1 2.5-2.3 2.5s-2.3-.9-2.3-2.5z" fill="#f59e0b"/>
-              <circle cx="12.9" cy="13.3" r="1.2" fill="#241304"/><circle cx="19.1" cy="13.3" r="1.2" fill="#241304"/>
-            </svg>
-          </div>
-          <span class="text-sm text-[#7a7a7a]">Evertusk &middot; v{VERSION} &middot; Not affiliated with Anthropic</span>
-        </div>
-        <div class="flex items-center gap-6 text-sm text-[#7a7a7a]">
-          <a href={GITHUB_URL} class="hover:text-amber-300 transition-colors">GitHub</a>
-          <span>Built with Tauri + Svelte</span>
-        </div>
-      </div>
-    </footer>
-
-  </body>
-</html>
+</Base>

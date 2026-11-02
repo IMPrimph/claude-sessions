@@ -1,0 +1,43 @@
+---
+import Base from './Base.astro'
+import { AUTHOR, DOWNLOAD_MAC, GITHUB_URL, PAGES, SITE, OG_IMAGE } from '../site'
+
+interface Props {
+  path: string
+  title: string
+  description: string
+  heading?: string
+  article?: boolean
+}
+const { path, title, description, heading = title, article = true } = Astro.props
+const updated = PAGES.find((page) => page.path === path)!.updated
+const readableDate = new Date(updated + "T12:00:00Z").toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })
+const breadcrumbs = {
+  "@type": "BreadcrumbList",
+  itemListElement: [
+    { "@type": "ListItem", position: 1, name: "Evertusk", item: SITE + "/" },
+    { "@type": "ListItem", position: 2, name: heading, item: SITE + path },
+  ],
+}
+const structuredData = {
+  "@context": "https://schema.org",
+  "@graph": article
+    ? [{ "@type": "TechArticle", headline: heading, description, url: SITE + path, image: OG_IMAGE, datePublished: updated, dateModified: updated, author: AUTHOR, publisher: AUTHOR, mainEntityOfPage: SITE + path }, breadcrumbs]
+    : [breadcrumbs],
+}
+---
+
+<Base title={title} description={description} path={path} structuredData={structuredData} ogType={article ? "article" : "website"}>
+  <article class="guide relative z-10 max-w-[720px] mx-auto px-6 pt-10 pb-16">
+    <p class="guide-crumb"><a href="/">Evertusk</a></p>
+    <h1 class="font-display font-bold text-3xl md:text-[2.75rem] text-white leading-[1.12] tracking-tight text-balance">{heading}</h1>
+    <p class="guide-byline">{article && <>By <a href={GITHUB_URL}>IMPrimph</a>, who builds Evertusk. </>}Checked and updated {readableDate}.</p>
+    <slot />
+    {article && (
+      <aside class="guide-cta">
+        <p><strong>Evertusk</strong> is a free Mac app that shows your Claude Code and Codex sessions in one searchable list. Nothing leaves your Mac.</p>
+        <p><a href="/#try-it">Try the demo in your browser</a> or <a href={DOWNLOAD_MAC}>download it</a>.</p>
+      </aside>
+    )}
+  </article>
+</Base>

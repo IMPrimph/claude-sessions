@@ -1,39 +1,35 @@
 <script lang="ts">
-  let { onClose }: { onClose: () => void } = $props();
+  import { closeDialog, modal } from "./dialog";
 
-  function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-    }
-  }
+  let { onClose }: { onClose: () => void } = $props();
 
   // Standard meta key on macOS, Ctrl elsewhere (close enough for label purposes)
   const meta = typeof navigator !== "undefined" && navigator.platform.startsWith("Mac") ? "⌘" : "Ctrl";
 
   const shortcuts: { keys: string[]; description: string }[] = [
-    { keys: [meta, "K"], description: "Focus the global search (project grid)" },
-    { keys: [meta, "F"], description: "Search inside the current conversation" },
-    { keys: ["Enter"], description: "Jump to next match (in conversation search)" },
-    { keys: ["Shift", "Enter"], description: "Jump to previous match" },
-    { keys: ["↑", "↓"], description: "Navigate between sessions in the sidebar" },
+    { keys: [meta, "K"], description: "Search everything" },
+    { keys: [meta, "F"], description: "Search this session" },
+    { keys: ["Enter"], description: "Next match in this session" },
+    { keys: ["Shift", "Enter"], description: "Previous match" },
+    { keys: ["↑ ↓"], description: "Move through the list while it has focus" },
+    { keys: [meta, "1"], description: "Toggle projects" },
+    { keys: [meta, "2"], description: "Toggle sessions" },
+    { keys: [meta, "3"], description: "Go to the conversation, to scroll it with the keyboard" },
+    { keys: [meta, "+"], description: "Make everything larger (" + meta + "− for smaller)" },
     { keys: [meta, ","], description: "Open settings" },
-    { keys: ["B"], description: "Open / close bookmarks" },
+    { keys: ["B"], description: "Open or close Saved" },
     { keys: ["Esc"], description: "Close panels, dialogs, and search" },
     { keys: ["?"], description: "Show this help" },
   ];
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="overlay" onclick={onClose}>
-  <div class="dialog" onclick={(event) => event.stopPropagation()}>
+<dialog class="app-dialog" style="--dialog-width: 560px" aria-labelledby="shortcuts-title" use:modal={onClose}>
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <div class="dialog-body" tabindex="0">
     <header>
-      <h2>Keyboard shortcuts</h2>
-      <button class="close-btn" onclick={onClose} title="Close (Esc)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+      <button class="close-btn" onclick={closeDialog} title="Close (Esc)" aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </header>
     <ul>
@@ -50,49 +46,22 @@
       {/each}
     </ul>
   </div>
-</div>
+</dialog>
 
 <style>
-  .overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 250;
-    background: rgba(0, 0, 0, 0.7);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-    animation: overlay-fade 0.15s ease-out;
-  }
-
-  @keyframes overlay-fade {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
-  .dialog {
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-    width: 100%;
-    max-width: 480px;
-    padding: 20px 24px;
-  }
+  .dialog-body { padding: 16px 24px; }
 
   header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 16px;
+    margin-bottom: 8px;
   }
 
   h2 {
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
     margin: 0;
   }
 
@@ -121,10 +90,11 @@
   }
 
   li {
-    display: flex;
+    display: grid;
+    grid-template-columns: 124px minmax(0, 1fr);
     align-items: center;
-    gap: 16px;
-    padding: 9px 0;
+    gap: 12px;
+    padding: 6px 0;
     border-top: 1px solid var(--bg-elevated);
   }
 
@@ -136,13 +106,11 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    flex-shrink: 0;
-    min-width: 110px;
   }
 
   .plus {
     color: var(--text-faint);
-    font-size: 11px;
+    font-size: 12px;
   }
 
   kbd {
@@ -150,14 +118,14 @@
     align-items: center;
     justify-content: center;
     font-family: "SF Mono", "Fira Code", monospace;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
     background: var(--bg-app);
     border: 1px solid var(--border);
     border-bottom-width: 2px;
     border-radius: 5px;
-    padding: 3px 8px;
+    padding: 2px 8px;
     min-width: 22px;
   }
 

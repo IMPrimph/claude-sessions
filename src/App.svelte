@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { check, type Update } from "@tauri-apps/plugin-updater";
   import { relaunch } from "@tauri-apps/plugin-process";
@@ -9,80 +10,62 @@
     GlobalSearchResult,
     Bookmark,
   } from "./lib/types";
-  import ProjectGrid from "./lib/ProjectGrid.svelte";
+  import Sidebar, { type Scope } from "./lib/Sidebar.svelte";
   import SessionList from "./lib/SessionList.svelte";
   import ConversationView from "./lib/ConversationView.svelte";
   import ShortcutsOverlay from "./lib/ShortcutsOverlay.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
-  import BookmarksView from "./lib/BookmarksView.svelte";
   import WelcomeModal from "./lib/WelcomeModal.svelte";
-  import { bookmarks } from "./lib/bookmarks.svelte";
-  import { preferences, cycleTheme, dismissWelcome } from "./lib/preferences.svelte";
+  import { bookmarks, removeBookmark } from "./lib/bookmarks.svelte";
+  import { projectLabels, sessionTitle, timeMs } from "./lib/format";
+  import { dialogIsOpen } from "./lib/dialog";
+  import { preferences, dismissWelcome, setPanels } from "./lib/preferences.svelte";
 
-  let projects: ProjectInfo[] = $state([]);
-  let selectedProject: ProjectInfo | null = $state(null);
-  let sessions: SessionInfo[] = $state([]);
+  const REFRESH_INTERVAL_MS = 20000;
+  const SEARCH_DEBOUNCE_MS = 300;
+  const SESSION_GONE = "This session's file can't be read any more. You're seeing what was already loaded.";
+
+  // One list of every session from every tool. Each view is just a filter over it.
+  let liveProjects: ProjectInfo[] = $state([]);
+  let liveSessions: SessionInfo[] = $state([]);
+  let archivedSessions: SessionInfo[] = $state([]);
+  let initialLoading = $state(true);
+  let projectsLoading = $state(true);
+
+  let scope: Scope = $state({ kind: "all" });
+  let toolFilter = $state("all");
+
   let selectedSession = $state<SessionInfo | null>(null);
   let messages: ConversationMessage[] = $state([]);
   let loadingMessages = $state(false);
-  let loadingSessions = $state(false);
-  let initialLoading = $state(true);
-  let sortOrder: "newest" | "oldest" = $state("newest");
-  let sessionTokenMap: Map<string, number> = $state(new Map());
-  let showBookmarks = $state(false);
-  // Set right before loading a session from a bookmark so ConversationView scrolls
-  // to the bookmarked message. Cleared on a normal session selection.
+  let refreshing = $state(false);
+  // Set when arriving from a bookmark or search hit, so the conversation jumps there.
   let pendingScrollTimestamp: string | null = $state(null);
+  let pendingSearch = $state("");
+  // Counts deliberate navigation. A refresh replaces the session object but must leave you
+  // where you are, so the view resets on this rather than on the object.
+  let navigation = $state(0);
+  let messageError = $state("");
+  let readProblems: string[] = $state([]);
+  let missingArchiveFolders = $state(new Set<string>());
 
-  let sortedSessions = $derived(
-    sortOrder === "newest" ? sessions : [...sessions].reverse()
-  );
+  let archivedSessionIds = $derived(new Set(archivedSessions.map((session) => session.session_id)));
 
-  // The parent session the selected one was forked from (if any + still present),
-  // so ConversationView can show a clickable "Forked from …" chip in its header.
-  let forkParent = $derived(
-    selectedSession?.forked_from_session_id
-      ? sessions.find(
-          (entry) => entry.session_id === selectedSession!.forked_from_session_id
-        ) ?? null
-      : null
-  );
-
-  // Saved (archived) sessions — local copies that survive Claude Code's 30-day cleanup.
-  // Each entry's jsonl_path points at the archived transcript.
-  let archivedSessions: SessionInfo[] = $state([]);
-  let archivedSessionIds: Set<string> = $state(new Set());
-
-  async function loadArchivedSessions() {
-    try {
-      archivedSessions = await invoke<SessionInfo[]>("get_archived_sessions");
-      archivedSessionIds = new Set(archivedSessions.map((session) => session.session_id));
-    } catch {
-      // Archive is optional — ignore failures.
-    }
-  }
-
-  // Saved sessions whose live transcript Claude Code already deleted still belong in
-  // their project's list; they open from the archived copy.
-  function withExpiredSaved(liveSessions: SessionInfo[], projectPath: string): SessionInfo[] {
+  // Saved sessions whose live transcript has expired still belong in every list.
+  let allSessions = $derived.by(() => {
     const liveIds = new Set(liveSessions.map((session) => session.session_id));
-    const expired = archivedSessions.filter(
-      (session) => session.project_path === projectPath && !liveIds.has(session.session_id)
-    );
-    if (expired.length === 0) return liveSessions;
-    return [...liveSessions, ...expired].sort((first, second) =>
-      (second.modified ?? "").localeCompare(first.modified ?? "")
-    );
-  }
+    const expired = archivedSessions.filter((session) => !liveIds.has(session.session_id));
+    const merged = expired.length === 0 ? liveSessions : [...liveSessions, ...expired];
+    return [...merged].sort((first, second) => timeMs(second.modified) - timeMs(first.modified));
+  });
 
-  // Live projects plus projects that now exist only as saved sessions (every live
-  // transcript expired), so those saved sessions stay reachable from the grid.
+  // Projects from live folders, plus any that now exist only as saved sessions.
   let allProjects = $derived.by(() => {
-    const livePaths = new Set(projects.map((project) => project.project_path));
+    const livePaths = new Set(liveProjects.map((project) => project.project_path));
     const archiveOnly = new Map<string, ProjectInfo>();
     for (const session of archivedSessions) {
-      if (livePaths.has(session.project_path)) continue;
-      const modifiedMs = session.modified ? Date.parse(session.modified) : 0;
+      if (livePaths.has(session.project_path) || liveSessions.some((live) => live.session_id === session.session_id)) continue;
+      const modifiedMs = timeMs(session.modified);
       const existing = archiveOnly.get(session.project_path);
       if (existing) {
         existing.session_count += 1;
@@ -90,6 +73,8 @@
         continue;
       }
       archiveOnly.set(session.project_path, {
+        tools: [session.tool],
+        folder_exists: !missingArchiveFolders.has(session.project_path),
         project_path: session.project_path,
         project_name: session.project_name,
         short_path: session.project_path,
@@ -98,265 +83,332 @@
         last_active_ms: modifiedMs,
       });
     }
-    return [...projects, ...archiveOnly.values()];
+    return [...liveProjects, ...archiveOnly.values()].sort((first, second) => second.last_active_ms - first.last_active_ms);
   });
 
-  let selectedSessionSaved = $derived(
-    selectedSession ? archivedSessionIds.has(selectedSession.session_id) : false
+  let labels = $derived(projectLabels(allProjects));
+
+  let tools = $derived([...new Set(allSessions.map((session) => session.tool))].sort());
+
+  let visibleSessions = $derived(
+    allSessions.filter((session) => {
+      if (toolFilter !== "all" && session.tool !== toolFilter) return false;
+      if (scope.kind === "saved") return archivedSessionIds.has(session.session_id);
+      if (scope.kind === "project") return session.project_path === scope.path;
+      return true;
+    })
   );
-  // A saved session is "locked" (can't be un-saved) while bookmarks depend on it,
-  // otherwise removing it would re-break those bookmarks.
+
+  let heading = $derived.by(() => {
+    if (scope.kind === "all") return "All activity";
+    if (scope.kind === "saved") return "Saved";
+    const path = scope.path;
+    return labels.get(path) ?? "Project";
+  });
+
+  let forkParent = $derived(
+    selectedSession?.forked_from_session_id
+      ? allSessions.find((entry) => entry.session_id === selectedSession!.forked_from_session_id) ?? null
+      : null
+  );
+
+  // A running session changes constantly, so new activity is offered rather than yanked in.
+  let hasNewActivity = $derived.by(() => {
+    if (!selectedSession) return false;
+    const current = allSessions.find((session) => session.jsonl_path === selectedSession!.jsonl_path);
+    return !!current && current.last_written !== selectedSession.last_written;
+  });
+
+  let selectedSessionSaved = $derived(selectedSession ? archivedSessionIds.has(selectedSession.session_id) : false);
+  // A saved session is locked while bookmarks depend on it: removing it would break them.
   let selectedSaveLocked = $derived(
-    selectedSessionSaved &&
-      !!selectedSession &&
-      bookmarks.some((entry) => entry.session_id === selectedSession!.session_id)
+    selectedSessionSaved && !!selectedSession && bookmarks.some((entry) => entry.session_id === selectedSession!.session_id)
   );
 
-  async function toggleSaveSelectedSession() {
-    const session = selectedSession;
-    if (!session) return;
-    const sessionId = session.session_id;
-
-    if (archivedSessionIds.has(sessionId)) {
-      // Keep it if a bookmark still relies on this archived copy.
-      if (bookmarks.some((entry) => entry.session_id === sessionId)) return;
-      try {
-        await invoke("unarchive_session", { sessionId });
-        const next = new Set(archivedSessionIds);
-        next.delete(sessionId);
-        archivedSessionIds = next;
-        archivedSessions = archivedSessions.filter((entry) => entry.session_id !== sessionId);
-      } catch (unsaveError) {
-        console.error("Failed to remove saved session:", unsaveError);
-      }
-      return;
-    }
-
+  async function loadArchivedSessions() {
     try {
-      await invoke("archive_session", {
-        jsonlPath: session.jsonl_path,
-        sessionId,
-        projectPath: session.project_path,
-        projectName: session.project_name,
-        title: session.custom_title || session.summary || session.ai_title || null,
-      });
-      const next = new Set(archivedSessionIds);
-      next.add(sessionId);
-      archivedSessionIds = next;
-    } catch (saveError) {
-      console.error("Failed to save session:", saveError);
-    }
-  }
-
-  async function loadProjects() {
-    try {
-      projects = await invoke<ProjectInfo[]>("get_projects");
-    } catch (loadError) {
-      console.error("Failed to load projects:", loadError);
-    } finally {
-      initialLoading = false;
-    }
-  }
-
-  async function selectProject(project: ProjectInfo) {
-    selectedProject = project;
-    selectedSession = null;
-    messages = [];
-    loadingSessions = true;
-
-    try {
-      const liveSessions = await invoke<SessionInfo[]>("scan_projects", {
-        projectPath: project.project_path,
-      });
-      sessions = withExpiredSaved(liveSessions, project.project_path);
-      loadTokensInBackground(sessions);
-    } catch (loadError) {
-      console.error("Failed to load sessions:", loadError);
-    } finally {
-      loadingSessions = false;
-    }
-  }
-
-  // Bumped whenever the token loader should abandon its in-flight work — e.g.
-  // when the user switches projects or triggers a refresh. The running loop
-  // compares this counter on each iteration AND after each awaited invoke so
-  // stale invocations stop committing to sessionTokenMap.
-  let tokenLoaderGeneration = 0;
-
-  async function loadTokensInBackground(sessionList: SessionInfo[]) {
-    tokenLoaderGeneration += 1;
-    const myGeneration = tokenLoaderGeneration;
-    sessionTokenMap = new Map();
-    if (sessionList.length === 0) return;
-
-    try {
-      // One call returns the whole project's totals (session_id → tokens) instead
-      // of a per-session IPC round-trip.
-      const totals = await invoke<Record<string, number>>("get_project_tokens", {
-        jsonlPaths: sessionList.map((session) => session.jsonl_path),
-      });
-      // Stale guard: the user may have switched projects while the scan ran.
-      if (myGeneration !== tokenLoaderGeneration) return;
-      sessionTokenMap = new Map(Object.entries(totals));
+      archivedSessions = await invoke<SessionInfo[]>("get_archived_sessions");
+      const paths = [...new Set(archivedSessions.map((session) => session.project_path))];
+      const existing = (await invoke<string[]>("existing_folders", { paths })) ?? [];
+      missingArchiveFolders = new Set(paths.filter((path) => !existing.includes(path)));
     } catch {
-      // Token badges are optional — silent failure is fine
+      // The archive is optional: everything else works without it.
     }
   }
 
-  function goBackToProjects() {
-    selectedProject = null;
-    selectedSession = null;
-    sessions = [];
-    sessionTokenMap = new Map();
-    messages = [];
-    pendingScrollTimestamp = null;
+  // At the smallest window the list and the session share one pane. Searching or changing
+  // scope has to bring the list back, or the results would be invisible.
+  let listWanted = $state(false);
+  const smallWindow = () => matchMedia("(max-width: 1000px)").matches;
+
+  function focusConversation() {
+    document.querySelector<HTMLElement>(".messages-container")?.focus({ preventScroll: true });
   }
 
-  let refreshing = $state(false);
+  function focusSelectedRow() {
+    const row = document.querySelector<HTMLElement>(".board .row.selected") ?? document.querySelector<HTMLElement>(".board .scroll button.row");
+    row?.scrollIntoView({ block: "nearest" });
+    row?.focus({ preventScroll: true });
+  }
 
-  async function refreshCurrent() {
-    if (!selectedProject || refreshing) return;
-    refreshing = true;
-    const currentProject = selectedProject;
-    const currentSessionId = selectedSession?.session_id;
+  // Back keeps the session selected, so its row is still marked in the list.
+  async function returnToList() {
+    listWanted = true;
+    await tick();
+    focusSelectedRow();
+  }
 
-    try {
-      // Reload sessions for the current project
-      const updatedSessions = withExpiredSaved(
-        await invoke<SessionInfo[]>("scan_projects", {
-          projectPath: currentProject.project_path,
-        }),
-        currentProject.project_path
-      );
-      sessions = updatedSessions;
-      loadTokensInBackground(updatedSessions);
+  async function handleSearchDismissed() {
+    if (selectedSession) listWanted = false;
+    await tick();
+    if (selectedSession && smallWindow()) focusConversation();
+    else focusSelectedRow();
+  }
 
-      // If a session was selected, reload its messages (it may have new content)
-      if (currentSessionId) {
-        const updatedSession = updatedSessions.find(
-          (session) => session.session_id === currentSessionId
-        );
-        if (updatedSession) {
-          selectedSession = updatedSession;
-          const updatedMessages = await invoke<ConversationMessage[]>(
-            "get_session_messages",
-            { jsonlPath: updatedSession.jsonl_path }
-          );
-          messages = updatedMessages;
-          // Refresh keeps the saved copy current with the latest transcript.
-          refreshArchiveIfSaved(updatedSession);
-        }
+  let projectCounts = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const session of allSessions) {
+      if (toolFilter === "all" || session.tool === toolFilter) {
+        counts.set(session.project_path, (counts.get(session.project_path) ?? 0) + 1);
       }
-    } catch (refreshError) {
-      console.error("Failed to refresh:", refreshError);
+    }
+    return counts;
+  });
+
+  // With no session open, the list is the only thing to look at, so it can't be hidden.
+  let listHidden = $derived(preferences.listHidden && !!selectedSession);
+
+  let loadError = $state("");
+  let loadInFlight = false;
+
+  async function loadAll() {
+    if (loadInFlight) return;
+    loadInFlight = true;
+    try {
+      // One after the other: the first read fills the metadata caches the second relies on,
+      // so a cold start doesn't decompress every Codex file twice.
+      liveSessions = await invoke<SessionInfo[]>("scan_projects");
+      initialLoading = false;
+      liveProjects = await invoke<ProjectInfo[]>("get_projects");
+      readProblems = (await invoke<string[]>("get_read_problems")) ?? [];
+      loadError = "";
+    } catch (loadFailure) {
+      console.error("Failed to load sessions:", loadFailure);
+      loadError = String(loadFailure);
     } finally {
-      refreshing = false;
+      loadInFlight = false;
+      initialLoading = false;
+      projectsLoading = false;
     }
   }
 
-  // Keep a saved session's disk copy fresh: if it's archived and the live file has
-  // grown since we saved it, re-copy it. archive_session only rewrites when the
-  // source is newer, and no-ops if the live file has already expired.
-  function refreshArchiveIfSaved(session: SessionInfo) {
-    if (!archivedSessionIds.has(session.session_id)) return;
-    invoke("archive_session", {
+  // Why the last save fell short, shown in the session header. The transcript can still
+  // have been saved, so the saved list reloads either way.
+  let saveError = $state("");
+
+  async function handleSessionArchived(archiveError = "") {
+    saveError = archiveError;
+    await loadArchivedSessions();
+  }
+
+  function archiveArguments(session: SessionInfo) {
+    return {
       jsonlPath: session.jsonl_path,
       sessionId: session.session_id,
       projectPath: session.project_path,
       projectName: session.project_name,
       title: session.custom_title || session.summary || session.ai_title || null,
-    }).catch(() => {
-      // Live file gone (expired) — fine, the archive is what we read from.
+    };
+  }
+
+  async function toggleSaveSelectedSession() {
+    const session = selectedSession;
+    if (!session) return;
+    saveError = "";
+    if (archivedSessionIds.has(session.session_id)) {
+      if (bookmarks.some((entry) => entry.session_id === session.session_id)) return;
+      try {
+        await invoke("unarchive_session", { sessionId: session.session_id });
+        await loadArchivedSessions();
+      } catch (unsaveError) {
+        console.error("Failed to remove saved session:", unsaveError);
+        saveError = String(unsaveError);
+      }
+      return;
+    }
+    try {
+      await invoke("archive_session", archiveArguments(session));
+      await loadArchivedSessions();
+    } catch (archiveError) {
+      await handleSessionArchived(String(archiveError));
+    }
+  }
+
+  // Keep a saved session's copy current. Only Claude Code sessions are archived.
+  function refreshArchiveIfSaved(session: SessionInfo) {
+    if (session.tool !== "claude" || !archivedSessionIds.has(session.session_id)) return;
+    invoke("archive_session", archiveArguments(session)).catch(() => {
+      // The live file has expired: the archive is what's being read, so nothing to do.
     });
   }
 
-  async function selectSession(session: SessionInfo, scrollTimestamp: string | null = null) {
+  // Why the open session couldn't be reloaded. What was already read stays on screen.
+  let reloadProblem = $state("");
+
+  // Bumped per navigation, so a slow response can't overwrite a newer selection.
+  let messagesLoaderGeneration = 0;
+
+  async function selectSession(session: SessionInfo, scrollTimestamp: string | null = null, search = "") {
+    messagesLoaderGeneration += 1;
+    const myGeneration = messagesLoaderGeneration;
     selectedSession = session;
+    navigation += 1;
+    messageError = "";
+    listWanted = false;
+    saveError = "";
     pendingScrollTimestamp = scrollTimestamp;
+    pendingSearch = search;
     loadingMessages = true;
     messages = [];
-
+    reloadProblem = "";
+    // On a small window the row that was clicked has just been hidden.
+    if (smallWindow()) tick().then(focusConversation);
     try {
-      messages = await invoke<ConversationMessage[]>("get_session_messages", {
-        jsonlPath: session.jsonl_path,
-      });
-    } catch (loadError) {
-      console.error("Failed to load messages:", loadError);
+      const loadedMessages = await invoke<ConversationMessage[]>("get_session_messages", { jsonlPath: session.jsonl_path });
+      // Arrow-key navigation can outrun a large session's load.
+      if (myGeneration !== messagesLoaderGeneration) return;
+      messages = loadedMessages;
+    } catch (loadFailure) {
+      console.error("Failed to load messages:", loadFailure);
+      if (myGeneration === messagesLoaderGeneration) messageError = String(loadFailure);
     } finally {
-      loadingMessages = false;
+      if (myGeneration === messagesLoaderGeneration) loadingMessages = false;
     }
-    // A saved session you keep working in shouldn't drift stale on disk.
     refreshArchiveIfSaved(session);
   }
 
-  // Navigate from a bookmark: open its project + session and scroll to the message.
-  // Works even if the project isn't in the loaded list (synthesize a minimal entry).
-  async function openBookmark(bookmark: Bookmark) {
-    showBookmarks = false;
-    let project = allProjects.find((entry) => entry.project_path === bookmark.project_path);
-    if (!project) {
-      project = {
-        project_path: bookmark.project_path,
-        project_name: bookmark.project_name,
-        short_path: bookmark.project_path,
-        session_count: 0,
-        last_active: null,
-        last_active_ms: 0,
-      };
+  async function refreshSelectedSession() {
+    if (refreshing) return;
+    refreshing = true;
+    reloadProblem = "";
+    try {
+      await loadAll();
+      const current = selectedSession;
+      const updated = allSessions.find((session) => session.jsonl_path === current?.jsonl_path)
+        ?? allSessions.find((session) => session.session_id === current?.session_id);
+      if (current && !updated) reloadProblem = SESSION_GONE;
+      if (updated) {
+        messagesLoaderGeneration += 1;
+        const myGeneration = messagesLoaderGeneration;
+        selectedSession = updated;
+        const updatedMessages = await invoke<ConversationMessage[]>("get_session_messages", { jsonlPath: updated.jsonl_path });
+        if (myGeneration !== messagesLoaderGeneration) return;
+        messages = updatedMessages;
+        // This may have superseded a load in progress, which leaves the flag to us.
+        loadingMessages = false;
+        refreshArchiveIfSaved(updated);
+      }
+    } catch (refreshFailure) {
+      console.error("Failed to refresh:", refreshFailure);
+      loadingMessages = false;
+      reloadProblem = `${SESSION_GONE} (${refreshFailure})`;
+    } finally {
+      refreshing = false;
     }
-    await selectProject(project);
-    const targetSession = sessions.find((entry) => entry.session_id === bookmark.session_id);
-    if (targetSession) {
-      await selectSession(targetSession, bookmark.timestamp);
+  }
+
+  async function handleArchiveMoved() {
+    await loadArchivedSessions();
+    await refreshSelectedSession();
+  }
+
+  // Open a bookmark. If the live session has expired, its archived copy still opens.
+  async function openBookmark(bookmark: Bookmark) {
+    const session = allSessions.find((entry) => entry.session_id === bookmark.session_id);
+    if (session) {
+      await selectSession(session, bookmark.timestamp);
       return;
     }
-
-    // The live session is gone (Claude Code's 30-day cleanup). If we archived it
-    // when the bookmark was created, open from the archived copy instead.
     try {
-      const archivedPath = await invoke<string | null>("get_archived_session_path", {
-        sessionId: bookmark.session_id,
-      });
+      const archivedPath = await invoke<string | null>("get_archived_session_path", { sessionId: bookmark.session_id });
       if (archivedPath) {
-        const archivedSession: SessionInfo = {
-          session_id: bookmark.session_id,
-          summary: null,
-          custom_title: null,
-          ai_title: null,
-          first_prompt: bookmark.preview,
-          project_path: bookmark.project_path,
-          project_name: bookmark.project_name,
-          created: null,
-          modified: null,
-          message_count: null,
-          conversation_count: 0,
-          total_tokens: 0,
-          git_branch: null,
-          forked_from_session_id: null,
-          jsonl_path: archivedPath,
-        };
-        await selectSession(archivedSession, bookmark.timestamp);
+        await selectSession(
+          {
+            session_id: bookmark.session_id,
+            tool: "claude",
+            archived_in_tool: false,
+            summary: null,
+            custom_title: null,
+            ai_title: null,
+            first_prompt: bookmark.preview,
+            project_path: bookmark.project_path,
+            project_name: bookmark.project_name,
+            created: null,
+            modified: null,
+            last_written: null,
+            conversation_count: 0,
+            git_branch: null,
+            forked_from_session_id: null,
+            jsonl_path: archivedPath,
+          },
+          bookmark.timestamp
+        );
       }
     } catch (resolveError) {
       console.error("Failed to resolve archived session:", resolveError);
     }
   }
 
-  async function openSearchResult(result: GlobalSearchResult) {
-    const matchingProject = projects.find(
-      (project) => project.project_path === result.project_path
-    );
-    if (matchingProject) {
-      await selectProject(matchingProject);
-      const matchingSession = sessions.find(
-        (session) => session.session_id === result.session_id
-      );
-      if (matchingSession) {
-        await selectSession(matchingSession);
-      }
-    }
-  }
+  // ── Search everything ─────────────────────────────────────
 
+  let searchQuery = $state("");
+  let searchResults: GlobalSearchResult[] = $state([]);
+  let searching = $state(false);
+  // A search can take seconds, so an older one can finish after a newer one started.
+  let searchGeneration = 0;
+
+  $effect(() => {
+    const query = searchQuery.trim();
+    const tool = toolFilter === "all" ? null : toolFilter;
+    // Only the query brings the list back. Reading the panel state here would make hiding
+    // the list rerun the search, and the search show it again.
+    if (query) {
+      untrack(() => {
+        listWanted = true;
+        if (preferences.listHidden) setPanels(preferences.railHidden, false);
+      });
+    }
+    searchGeneration += 1;
+    const myGeneration = searchGeneration;
+    if (!query) {
+      searchResults = [];
+      searching = false;
+      return;
+    }
+    searching = true;
+    const timer = setTimeout(async () => {
+      try {
+        const results = await invoke<GlobalSearchResult[]>("global_search", { query, tool });
+        if (myGeneration === searchGeneration) searchResults = results;
+      } catch (searchFailure) {
+        console.error("Search failed:", searchFailure);
+      } finally {
+        if (myGeneration === searchGeneration) searching = false;
+      }
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  });
+
+  async function openSearchResult(result: GlobalSearchResult) {
+    const findSession = () => allSessions.find((entry) => entry.jsonl_path === result.jsonl_path);
+    // Search reads the disk directly, so it can find a session the list hasn't picked up yet.
+    if (!findSession()) await loadAll();
+    const session = findSession();
+    if (!session) return;
+    // Results stay on the left so you can hop between them, and the words stay highlighted.
+    const isMessageHit = result.match_source === "message";
+    selectSession(session, isMessageHit ? result.timestamp : null, isMessageHit ? searchQuery.trim() : "");
+  }
 
   // ── Auto-updater ─────────────────────────────────────────
 
@@ -365,6 +417,14 @@
   let updateError = $state("");
   let updateStatus: "idle" | "checking" | "no-update" | "error" = $state("idle");
   let updateStatusMessage = $state("");
+  const UPDATE_NOTE_MS = 4000;
+  // Settings is modal, so a check started there reports there, not on a banner behind it.
+  let updateNote = $derived.by(() => {
+    if (updateStatus === "checking") return "Checking…";
+    if (pendingUpdate) return `Update available: v${pendingUpdate.version}. Close Settings to install.`;
+    if (updateStatus === "error") return `Update check failed: ${updateStatusMessage}`;
+    return updateStatusMessage;
+  });
 
   async function checkForUpdates(manual = false) {
     updateStatus = "checking";
@@ -377,7 +437,10 @@
         updateStatus = "idle";
       } else {
         updateStatus = "no-update";
-        if (manual) updateStatusMessage = "You're on the latest version";
+        if (manual) {
+          updateStatusMessage = "You're on the latest version";
+          setTimeout(dismissStatus, UPDATE_NOTE_MS);
+        }
       }
     } catch (checkError) {
       console.error("Update check failed:", checkError);
@@ -410,44 +473,76 @@
   }
 
   $effect(() => {
-    loadProjects();
-    checkForUpdates();
+    loadAll();
     loadArchivedSessions();
+    checkForUpdates();
+    const timer = setInterval(() => {
+      if (!document.hidden) loadAll();
+    }, REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
   });
 
-  // ── Keyboard shortcuts overlay (toggled with `?`) ─────────────
   let showShortcuts = $state(false);
   let showSettings = $state(false);
 
+  // Every link comes from a transcript. Clicking one must open the browser and never
+  // navigate this window away, wherever it was rendered.
+  function handleLinkClick(event: MouseEvent) {
+    const link = (event.target as HTMLElement).closest("a");
+    if (!link) return;
+    event.preventDefault();
+    invoke("open_external_url", { url: link.href }).catch((openError) => {
+      console.error("Cannot open link:", openError);
+    });
+  }
+
   function handleGlobalShortcut(event: KeyboardEvent) {
-    // Cmd+, opens settings (macOS convention) — works even from inputs since it's a real shortcut
+    if (dialogIsOpen()) return;
+    // Cmd+, opens settings (macOS convention), even from inputs since it's a real shortcut.
     if ((event.metaKey || event.ctrlKey) && event.key === ",") {
       event.preventDefault();
       showSettings = true;
       return;
     }
-    // Ignore plain-key shortcuts when the user is typing in an input
-    const target = event.target as HTMLElement | null;
-    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "1") {
+      event.preventDefault();
+      setPanels(!preferences.railHidden, preferences.listHidden);
       return;
     }
-    // `?` is shift+/ on US keyboards — accept either the literal '?' or shift+/
+    if ((event.metaKey || event.ctrlKey) && event.key === "2") {
+      event.preventDefault();
+      // A small window already swaps the list and the session, so there's nothing to toggle.
+      if (!smallWindow()) setPanels(preferences.railHidden, !preferences.listHidden);
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key === "3") {
+      event.preventDefault();
+      if (selectedSession) listWanted = false;
+      return;
+    }
+    // Ignore plain-key shortcuts while typing.
+    const target = event.target as HTMLElement | null;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
     if (event.key === "?" || (event.key === "/" && event.shiftKey)) {
       event.preventDefault();
       showShortcuts = true;
       return;
     }
-    // `b` toggles the bookmarks view (plain key — modifiers reserved for the OS/app)
     if ((event.key === "b" || event.key === "B") && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault();
-      showBookmarks = !showBookmarks;
+      scope = scope.kind === "saved" ? { kind: "all" } : { kind: "saved" };
+      searchQuery = "";
+      listWanted = true;
+      setPanels(preferences.railHidden, false);
     }
   }
 </script>
 
-<svelte:window onkeydown={handleGlobalShortcut} />
+<svelte:window onkeydown={handleGlobalShortcut} onclick={handleLinkClick} />
 
-{#if pendingUpdate}
+{#if showSettings}
+  <!-- Reported inside Settings. -->
+{:else if pendingUpdate}
   <div class="update-banner">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -483,140 +578,142 @@
         {updateStatusMessage}
       {/if}
     </span>
-    <button class="update-btn ghost" onclick={() => checkForUpdates(true)} title="Retry">
-      Retry
-    </button>
+    {#if updateStatus === "error"}
+      <button class="update-btn ghost" onclick={() => checkForUpdates(true)}>Retry</button>
+    {/if}
     <button class="update-btn ghost" onclick={dismissStatus} title="Dismiss">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
     </button>
   </div>
 {/if}
 
-<div class="floating-actions">
-  <button
-    class="floating-action-btn"
-    onclick={cycleTheme}
-    title="Theme: {preferences.theme} — click to cycle (Dark → Light → Bright)"
-    aria-label="Cycle theme"
-  >
-    {#if preferences.theme === "dark"}
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-    {:else if preferences.theme === "light"}
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
-    {:else}
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="5"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" stroke-width="2"/></svg>
-    {/if}
-  </button>
-  <button
-    class="floating-action-btn"
-    class:floating-action-active={showBookmarks}
-    onclick={() => (showBookmarks = !showBookmarks)}
-    title="Bookmarks"
-    aria-label="Bookmarks"
-  >
-    <svg width="14" height="14" viewBox="0 0 24 24" fill={showBookmarks ? "currentColor" : "none"} stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-    {#if bookmarks.length > 0}
-      <span class="floating-badge">{bookmarks.length}</span>
-    {/if}
-  </button>
-  <button
-    class="floating-action-btn"
-    onclick={() => (showSettings = true)}
-    title="Settings (⌘,)"
-    aria-label="Open settings"
-  >
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-  </button>
-  <button
-    class="floating-action-btn floating-action-btn-help"
-    onclick={() => (showShortcuts = true)}
-    title="Keyboard shortcuts (?)"
-    aria-label="Show keyboard shortcuts"
-  >
-    ?
-  </button>
-</div>
-
 {#if showShortcuts}
   <ShortcutsOverlay onClose={() => (showShortcuts = false)} />
 {/if}
 
 {#if showSettings}
-  <SettingsPanel onClose={() => (showSettings = false)} />
+  <SettingsPanel
+    onClose={() => (showSettings = false)}
+    onArchiveMoved={handleArchiveMoved}
+    onCheckUpdates={() => checkForUpdates(true)}
+    {updateNote}
+  />
 {/if}
 
 {#if !initialLoading && !preferences.hasSeenWelcome}
   <WelcomeModal onDismiss={dismissWelcome} />
 {/if}
 
-<main>
-  {#if initialLoading}
-    <div class="loading-screen">
-      <div class="loading-spinner"></div>
-      <p>Loading projects...</p>
+{#snippet paneFailed(error: unknown, reset: () => void)}
+  <div class="pane-failed" role="alert">
+    <h2>This part of Evertusk stopped working</h2>
+    <p>{String(error)}</p>
+    <button class="update-btn ghost" onclick={reset}>Try again</button>
+  </div>
+{/snippet}
+
+<div class="app" class:has-session={!!selectedSession && !listWanted} class:rail-hidden={preferences.railHidden} class:list-hidden={listHidden}>
+  <header class="titlebar" data-tauri-drag-region>
+    <div class="title-controls">
+      <button class="title-btn back" onclick={returnToList} aria-label="Back to sessions">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+        <span class="tip" role="tooltip">Back to sessions</span>
+      </button>
+      <button class="title-btn rail-toggle" aria-pressed={!preferences.railHidden} aria-label="Toggle projects" onclick={() => setPanels(!preferences.railHidden, preferences.listHidden)}>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
+        <span class="tip" role="tooltip">Toggle projects <kbd>⌘1</kbd></span>
+      </button>
+      <button class="title-btn list-toggle" aria-pressed={!listHidden} aria-label="Toggle sessions" disabled={!selectedSession} onclick={() => setPanels(preferences.railHidden, !preferences.listHidden)}>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="3" /><path d="M9.5 4.5v15" /></svg>
+        <span class="tip" role="tooltip">{selectedSession ? "Toggle sessions" : "Open a session first"}{#if selectedSession} <kbd>⌘2</kbd>{/if}</span>
+      </button>
     </div>
-  {:else if showBookmarks}
-    <BookmarksView onBack={() => (showBookmarks = false)} onJump={openBookmark} />
-  {:else if !selectedProject}
-    <ProjectGrid projects={allProjects} onSelect={selectProject} onOpenResult={openSearchResult} onCheckUpdates={() => checkForUpdates(true)} onOpenBookmarks={() => (showBookmarks = true)} />
-  {:else}
-    <div class="app-layout">
-      <aside class="sidebar">
-        <div class="sidebar-header">
-          <button class="back-btn" onclick={goBackToProjects} title="Back to projects">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M19 12H5M12 19l-7-7 7-7" />
-            </svg>
-          </button>
-          <div class="project-title">
-            <span class="project-name">{selectedProject.project_name}</span>
-            <span class="project-path">{selectedProject.short_path}</span>
-          </div>
-          <button
-            class="refresh-btn"
-            class:spinning={refreshing}
-            onclick={refreshCurrent}
-            disabled={refreshing}
-            title="Refresh sessions"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-              <path d="M21 3v5h-5"/>
-              <path d="M3 21v-5h5"/>
-            </svg>
-          </button>
-        </div>
-        {#if loadingSessions}
-          <div class="sidebar-loading">Loading sessions...</div>
-        {:else}
-          <SessionList
-            sessions={sortedSessions}
-            selectedSessionId={selectedSession?.session_id ?? null}
-            onSelect={selectSession}
-            {sortOrder}
-            onSortChange={(order) => (sortOrder = order)}
-            tokenMap={sessionTokenMap}
-            savedSessionIds={archivedSessionIds}
-          />
-        {/if}
-      </aside>
-      <section class="main-content">
-        <ConversationView
-          session={selectedSession}
-          {messages}
-          loading={loadingMessages}
-          scrollToTimestamp={pendingScrollTimestamp}
-          {forkParent}
-          onOpenParent={() => forkParent && selectSession(forkParent)}
-          saved={selectedSessionSaved}
-          saveLocked={selectedSaveLocked}
-          onToggleSave={toggleSaveSelectedSession}
-        />
-      </section>
-    </div>
-  {/if}
-</main>
+    {#if selectedSession}
+      <h1 class="session-title" data-tauri-drag-region>{sessionTitle(selectedSession)}</h1>
+    {:else}
+      <h1 class="sr-only">Evertusk</h1>
+    {/if}
+  </header>
+  <div class="panes">
+  <svelte:boundary failed={paneFailed}>
+  <Sidebar
+    projects={allProjects}
+    {tools}
+    {scope}
+    {toolFilter}
+    {projectCounts}
+    loading={projectsLoading}
+    savedCount={archivedSessionIds.size + bookmarks.length}
+    bind:searchQuery
+    onScope={(nextScope) => {
+      scope = nextScope;
+      searchQuery = "";
+      listWanted = true;
+      setPanels(preferences.railHidden, false);
+    }}
+    onToolFilter={(tool) => (toolFilter = tool)}
+    onOpenSettings={() => (showSettings = true)}
+    onOpenShortcuts={() => (showShortcuts = true)}
+    onRevealSearch={() => setPanels(false, preferences.listHidden)}
+    onSearchDismissed={handleSearchDismissed}
+  />
+  </svelte:boundary>
+  <svelte:boundary failed={paneFailed}>
+  <SessionList
+    {heading}
+    sessions={visibleSessions}
+    {allSessions}
+    selectedPath={selectedSession?.jsonl_path ?? null}
+    {labels}
+    savedSessionIds={archivedSessionIds}
+    loading={initialLoading}
+    showProject={scope.kind !== "project"}
+    {searchQuery}
+    {searchResults}
+    {searching}
+    savedMode={scope.kind === "saved"}
+    {bookmarks}
+    {toolFilter}
+    problems={readProblems}
+    onClearToolFilter={() => (toolFilter = "all")}
+    onSelect={(session) => selectSession(session)}
+    onOpenResult={openSearchResult}
+    onOpenBookmark={openBookmark}
+    onRemoveBookmark={removeBookmark}
+  />
+  </svelte:boundary>
+  <main class="main-content">
+    <svelte:boundary failed={paneFailed}>
+    <ConversationView
+      session={selectedSession}
+      {messages}
+      loading={loadingMessages}
+      {loadError}
+      hasSessions={allSessions.length > 0}
+      readingHistory={initialLoading}
+      scrollToTimestamp={pendingScrollTimestamp}
+      initialSearch={pendingSearch}
+      {navigation}
+      {messageError}
+      {forkParent}
+      onOpenParent={() => forkParent && selectSession(forkParent)}
+      saved={selectedSessionSaved}
+      saveLocked={selectedSaveLocked}
+      onToggleSave={toggleSaveSelectedSession}
+      {saveError}
+      onSessionArchived={handleSessionArchived}
+      {hasNewActivity}
+      {refreshing}
+      onRefresh={refreshSelectedSession}
+      {reloadProblem}
+      onDismissReloadProblem={() => (reloadProblem = "")}
+      onReturnToList={returnToList}
+      chatOnly={preferences.railHidden && listHidden}
+    />
+    </svelte:boundary>
+  </main>
+  </div>
+</div>
 
 <style>
   :global(*) {
@@ -626,82 +723,201 @@
   }
 
   :global(body) {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-      "Helvetica Neue", Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
     background: var(--bg-app);
     color: var(--text-primary);
     overflow: hidden;
   }
 
-  main {
+  /* Only for assistive technology. */
+  :global(.sr-only) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* Native modals. margin:auto centres them, undoing the reset above. The body is the part that
+     scrolls, so Close and every setting stay reachable at 200% zoom. */
+  :global(dialog.app-dialog) {
+    margin: auto;
+    padding: 0;
+    width: min(var(--dialog-width, 540px), calc(100vw - 48px));
+    max-width: none;
+    max-height: calc(100vh - 48px);
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+    color: var(--text-primary);
+  }
+
+  :global(dialog.app-dialog[open]) {
+    display: flex;
+    flex-direction: column;
+  }
+
+  :global(dialog.app-dialog::backdrop) {
+    background: var(--overlay-scrim, rgba(0, 0, 0, 0.62));
+  }
+
+  :global(.dialog-body) {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  /* It takes focus so the keys scroll it. A ring round the whole dialog would say nothing. */
+  :global(.dialog-body:focus-visible) { outline: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(*), :global(*::before), :global(*::after) {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  .pane-failed {
+    flex: 1;
+    min-width: 0;
+    padding: 24px;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    color: var(--text-muted);
+  }
+
+  .pane-failed h2 {
+    margin-bottom: 4px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .pane-failed button { padding: 6px 10px; margin-top: 8px; border: 1px solid var(--border-strong); }
+
+  .app {
+    display: flex;
+    flex-direction: column;
     height: 100vh;
     width: 100vw;
   }
 
-  .floating-actions {
-    position: fixed;
-    bottom: 16px;
-    right: 16px;
-    z-index: 90;
+  .panes {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* The window's own controls sit over the left end, so the bar starts after them. */
+  .titlebar {
+    flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
+    height: 46px;
+    padding: 0 16px 0 88px;
+    background: var(--bg-sidebar);
+    border-bottom: 1px solid var(--border);
+    user-select: none;
   }
 
-  .floating-action-btn {
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    color: var(--text-muted);
-    cursor: pointer;
+  .title-controls {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    backdrop-filter: blur(10px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-    transition: all 0.15s;
+    gap: 4px;
+    flex-shrink: 0;
   }
 
-  .floating-action-btn:hover {
-    background: var(--border);
-    color: var(--accent-text);
-    border-color: rgba(99, 102, 241, 0.4);
-  }
-
-  .floating-action-btn.floating-action-active {
-    background: rgba(99, 102, 241, 0.2);
-    color: var(--accent-text);
-    border-color: rgba(99, 102, 241, 0.5);
-  }
-
-  .floating-action-btn {
+  .title-btn {
     position: relative;
-  }
-
-  .floating-badge {
-    position: absolute;
-    top: -4px;
-    right: -4px;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    border-radius: 999px;
-    background: var(--accent);
-    color: white;
-    font-size: 10px;
-    font-weight: 600;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-variant-numeric: tabular-nums;
+    width: 30px;
+    height: 30px;
+    background: none;
+    border: none;
+    border-radius: 7px;
+    color: var(--text-secondary);
+    cursor: pointer;
   }
 
-  .floating-action-btn-help {
-    font-size: 15px;
-    font-weight: 700;
-    font-family: "SF Mono", "Fira Code", monospace;
+  .title-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .title-btn:disabled { color: var(--text-faint); cursor: default; }
+  .title-btn[aria-pressed="false"] { color: var(--text-muted); }
+
+  .tip {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 100;
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px 6px 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+    font-size: 12.5px;
+    white-space: nowrap;
+    color: var(--text-primary);
+    pointer-events: none;
+  }
+
+  .title-btn:hover .tip,
+  .title-btn:focus-visible .tip { display: flex; }
+
+  .tip kbd {
+    padding: 1px 6px;
+    background: var(--bg-selected);
+    border-radius: 5px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .session-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .back { display: none; }
+
+  .main-content {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .app.rail-hidden :global(.sidebar) { display: none; }
+
+  @media (min-width: 1001px) {
+    .app.list-hidden :global(.board) { display: none; }
+  }
+
+  /* On a small window there's room for the session or the list, not both. */
+  @media (max-width: 1000px) {
+    /* At this width a session already replaces the list, so Back does that job. */
+    .list-toggle { display: none; }
+    .app.has-session .back { display: flex; }
+    .main-content { display: none; }
+    .app.has-session :global(.board) { display: none; }
+    .app.has-session .main-content { display: block; }
+    .app:not(.has-session) .session-title { display: none; }
   }
 
   .update-banner {
@@ -714,22 +930,21 @@
     align-items: center;
     gap: 10px;
     padding: 8px 10px 8px 14px;
-    background: linear-gradient(135deg, var(--bg-elevated), var(--bg-panel));
+    background: var(--bg-elevated);
     border: 1px solid var(--accent);
     border-radius: 10px;
-    box-shadow: 0 10px 40px rgba(99, 102, 241, 0.25);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
     color: var(--text-primary);
     font-size: 13px;
     max-width: 90%;
   }
 
   .update-banner.banner-error {
-    border-color: #ef4444;
-    box-shadow: 0 10px 40px rgba(239, 68, 68, 0.2);
+    border-color: var(--danger);
   }
 
   .update-banner.banner-error svg {
-    color: #f87171;
+    color: var(--danger);
   }
 
   .update-banner svg {
@@ -738,11 +953,12 @@
   }
 
   .update-text {
-    white-space: nowrap;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .update-error {
-    color: #f87171;
+    color: var(--danger);
     margin-left: 6px;
   }
 
@@ -758,7 +974,7 @@
 
   .update-btn.primary {
     background: var(--accent);
-    color: white;
+    color: var(--on-accent);
   }
 
   .update-btn.primary:hover:not(:disabled) {
@@ -780,148 +996,8 @@
   }
 
   .update-btn.ghost:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--bg-hover);
     color: var(--text-primary);
-  }
-
-  .loading-screen {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100vh;
-    gap: 16px;
-    color: var(--text-muted);
-  }
-
-  .loading-spinner {
-    width: 32px;
-    height: 32px;
-    border: 3px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  .app-layout {
-    display: flex;
-    height: 100vh;
-  }
-
-  .sidebar {
-    width: 340px;
-    min-width: 280px;
-    border-right: 1px solid var(--border);
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    background: var(--bg-sidebar);
-  }
-
-  .sidebar-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-
-  .back-btn {
-    background: var(--border);
-    border: none;
-    color: var(--text-secondary);
-    width: 32px;
-    height: 32px;
-    border-radius: 6px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    transition: all 0.15s;
-  }
-
-  .back-btn:hover {
-    background: var(--border-strong);
-    color: var(--text-primary);
-  }
-
-  .refresh-btn {
-    background: var(--border);
-    border: none;
-    color: var(--text-secondary);
-    width: 30px;
-    height: 30px;
-    border-radius: 6px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    margin-left: auto;
-    transition: all 0.15s;
-  }
-
-  .refresh-btn:hover:not(:disabled) {
-    background: var(--border-strong);
-    color: var(--text-primary);
-  }
-
-  .refresh-btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.7;
-  }
-
-  .refresh-btn.spinning svg {
-    animation: spin-refresh 0.8s linear infinite;
-  }
-
-  @keyframes spin-refresh {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  .project-title {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-
-  .project-name {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .project-path {
-    font-size: 11px;
-    color: var(--text-faint);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .sidebar-loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 40px 16px;
-    color: var(--text-faint);
-    font-size: 13px;
-  }
-
-  .main-content {
-    flex: 1;
-    min-width: 0;
-    min-height: 0;
   }
 
 </style>

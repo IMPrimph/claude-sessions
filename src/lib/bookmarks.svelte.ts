@@ -2,13 +2,26 @@ import type { Bookmark } from "./types";
 
 const STORAGE_KEY = "claude-sessions-bookmarks";
 
+function isBookmark(entry: unknown): entry is Bookmark {
+  if (typeof entry !== "object" || entry === null) return false;
+  const fields = entry as Record<string, unknown>;
+  return ["id", "session_id", "timestamp", "preview", "project_name"].every((field) => typeof fields[field] === "string");
+}
+
 function load(): Bookmark[] {
   if (typeof localStorage === "undefined") return [];
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    // Storage can be edited or damaged: one bad entry mustn't take the Saved view down.
+    const seen = new Set<string>();
+    return parsed.filter((entry) => {
+      if (!isBookmark(entry) || seen.has(entry.id)) return false;
+      seen.add(entry.id);
+      return true;
+    });
   } catch {
     return [];
   }

@@ -1,0 +1,37 @@
+---
+import Guide from '../layouts/Guide.astro'
+import { GITHUB_URL } from '../site'
+---
+<Guide
+  path="/privacy/"
+  title="Privacy: what Evertusk reads and sends"
+  heading="Privacy"
+  description="Evertusk has no account and uploads nothing. Exactly what the Mac app reads and writes, its one network request, and what this website collects."
+  article={false}
+>
+  <p class="guide-lead">Your sessions stay on your Mac. Evertusk has no account and no server, and it doesn't send your sessions anywhere. Its only automatic network request is checking GitHub for app updates.</p>
+
+  <h2>What the app reads</h2>
+  <ul>
+    <li><code>~/.claude/projects</code> and related Claude Code files, for your Claude Code sessions.</li>
+    <li><code>~/.codex/sessions</code> and <code>~/.codex/archived_sessions</code>, for your Codex sessions.</li>
+  </ul>
+  <p>These transcripts can contain anything you or your agents worked with, including source code and secrets. The app opens them read-only and never changes them.</p>
+
+  <h2>What the app writes</h2>
+  <ul>
+    <li><strong>Saved sessions:</strong> copies of the sessions you choose to save, in <code>~/Library/Application Support/com.claude-sessions.app</code>, or a folder you pick in Settings.</li>
+    <li><strong>A small index:</strong> session titles, first prompts and dates in <code>~/Library/Caches/com.claude-sessions.app</code>, so the list opens quickly. Deleting it just means one slower launch.</li>
+    <li><strong>Exports:</strong> Markdown files, where you choose to save them.</li>
+    <li><strong>Preferences and bookmarks:</strong> kept in the app's own storage.</li>
+  </ul>
+
+  <h2>What the app sends</h2>
+  <p>It checks GitHub for a newer version, and links you click open in your browser. There's no analytics or telemetry in the app. The <a href={GITHUB_URL}>source code</a> is public, so you can check this yourself.</p>
+
+  <h2>What this website collects</h2>
+  <p>The site uses Vercel Web Analytics, which is cookieless and counts page visits without personal data. Fonts are served from this site, so visiting doesn't contact Google. The demo runs entirely in your browser on made-up sessions, and doesn't read your files.</p>
+
+  <h2>Questions</h2>
+  <p>Open an issue on <a href={`${GITHUB_URL}/issues`}>GitHub</a>.</p>
+</Guide>

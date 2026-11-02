@@ -2,15 +2,20 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { ConversationMessage, SubagentInfo, ToolResultPayload } from "./types";
   import MessageBubble from "./MessageBubble.svelte";
+  import { dialogIsOpen } from "./dialog";
 
   let {
     subagent,
     sessionId,
     onClose,
+    onImageOpen,
+    toolName = "Claude",
   }: {
     subagent: SubagentInfo;
     sessionId: string;
     onClose: () => void;
+    onImageOpen?: (url: string, label: string) => void;
+    toolName?: string;
   } = $props();
 
   let messages: ConversationMessage[] = $state([]);
@@ -52,10 +57,15 @@
   });
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-    }
+    // Esc belongs to an open dialog first, and in a search box to the search.
+    if (event.key !== "Escape" || dialogIsOpen() || (event.target as HTMLElement).tagName === "INPUT") return;
+    event.preventDefault();
+    onClose();
+  }
+
+  // So PageDown and the arrow keys read the transcript straight away.
+  function focusOnOpen(element: HTMLElement) {
+    element.focus({ preventScroll: true });
   }
 </script>
 
@@ -63,31 +73,30 @@
 
 <aside class="subagent-panel">
   <header class="subagent-header">
-    <div class="subagent-meta">
-      <span class="subagent-tag">SUBAGENT</span>
-      {#if subagent.agent_type}
-        <span class="subagent-type">{subagent.agent_type}</span>
-      {/if}
+    <div class="subagent-column">
+      <button class="subagent-close" onclick={onClose} title="Back to all agents (Esc)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+        All agents
+      </button>
+      {#if subagent.agent_type}<span class="subagent-type">{subagent.agent_type}</span>{/if}
     </div>
-    <button class="subagent-close" onclick={onClose} title="Close (Esc)">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
-    </button>
+    {#if subagent.description}
+      <p class="subagent-column subagent-description">{subagent.description}</p>
+    {/if}
   </header>
 
-  {#if subagent.description}
-    <div class="subagent-description">{subagent.description}</div>
-  {/if}
-
-  <div class="subagent-scroll">
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <div class="subagent-scroll" role="region" aria-label="Agent transcript" tabindex="0" use:focusOnOpen>
     {#if loading}
-      <div class="subagent-status">Loading subagent transcript...</div>
+      <div class="progress" role="progressbar" aria-label="Reading this agent"></div>
+      <div class="subagent-status" role="status">Reading this agent's transcript…</div>
     {:else if loadError}
-      <div class="subagent-status subagent-error">Failed to load: {loadError}</div>
+      <div class="subagent-status subagent-error">Couldn't read this agent's transcript: {loadError}</div>
     {:else if messages.length === 0}
-      <div class="subagent-status">No messages found in this subagent's log</div>
+      <div class="subagent-status">This agent's transcript is empty</div>
     {:else}
       {#each messages as message, index (index)}
-        <MessageBubble {message} {sessionId} {toolResults} />
+        <MessageBubble assistantLabel={toolName} {message} {sessionId} {toolResults} transcriptPath={subagent.jsonl_path} userLabel="Task" {onImageOpen} />
       {/each}
     {/if}
   </div>
@@ -97,39 +106,27 @@
   .subagent-panel {
     display: flex;
     flex-direction: column;
-    height: 100%;
-    width: 540px;
-    min-width: 380px;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
     background: var(--bg-app);
-    border-left: 1px solid var(--border);
-    flex-shrink: 0;
   }
 
+  /* The same column and gutter as the conversation. */
   .subagent-header {
+    flex-shrink: 0;
+    padding: 10px clamp(24px, calc(100% - 898px), 56px) 10px 18px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
+  }
+
+  .subagent-column {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-panel);
-    flex-shrink: 0;
-  }
-
-  .subagent-meta {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .subagent-tag {
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--accent-hover);
-    background: rgba(99, 102, 241, 0.12);
-    border: 1px solid rgba(99, 102, 241, 0.28);
-    padding: 2px 8px;
-    border-radius: 999px;
-    letter-spacing: 0.06em;
+    max-width: 880px;
+    margin-inline: auto;
+    padding-left: 6px;
   }
 
   .subagent-type {
@@ -139,12 +136,13 @@
   }
 
   .subagent-close {
-    background: var(--border);
-    border: none;
+    gap: 4px;
+    padding: 4px 8px 4px 5px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    font-size: 12px;
     color: var(--text-secondary);
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
+    border-radius: 5px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -158,42 +156,38 @@
   }
 
   .subagent-description {
-    padding: 10px 18px;
+    margin-top: 6px;
     font-size: 12px;
     color: var(--text-muted);
     line-height: 1.5;
-    border-bottom: 1px solid var(--bg-elevated);
-    background: var(--bg-app);
-    flex-shrink: 0;
   }
 
   .subagent-scroll {
     flex: 1;
     overflow-y: auto;
-    padding: 12px 18px;
+    scrollbar-gutter: stable;
+    padding: 12px 48px 40px 18px;
+  }
+
+  .subagent-scroll:focus-visible {
+    outline: none;
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+
+  .subagent-scroll > :global(*) {
+    max-width: 880px;
+    margin-inline: auto;
+    padding-left: 6px;
   }
 
   .subagent-status {
     padding: 60px 16px;
     text-align: center;
-    color: var(--text-faint);
+    color: var(--text-muted);
     font-size: 13px;
   }
 
   .subagent-error {
-    color: #f87171;
-  }
-
-  .subagent-scroll::-webkit-scrollbar {
-    width: 8px;
-  }
-
-  .subagent-scroll::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .subagent-scroll::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 4px;
+    color: var(--danger);
   }
 </style>

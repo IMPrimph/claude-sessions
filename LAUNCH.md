@@ -43,8 +43,9 @@ Evertusk is a small, local desktop app (Tauri + Rust + Svelte) that:
 - Browses every session across every project, with search and keyboard nav
 - Surfaces things the raw logs bury: mid-turn interrupts, the option you picked
   in an AskUserQuestion, published artifacts, and fork/branch lineage
-- Lets you Save or bookmark a session, which copies it to a local folder so it
-  survives the 30-day cleanup. Bookmarks to expired sessions still open.
+- Lets you Save or bookmark a Claude Code session, which copies it to a local
+  folder so it survives the 30-day cleanup. Bookmarks to expired sessions still open.
+- Reads Codex sessions too, in the same list (browse and search; Save is Claude Code only)
 
 Everything stays on your machine — no server, no account, nothing uploaded.
 Free and source-available (FSL). macOS build + `brew` coming.
@@ -138,8 +139,7 @@ video (now `demo.mp4`, not a GIF). Read each sub's rules first; lead with value,
 1/ Your Claude Code sessions are being deleted every 30 days. Transcripts, tool
 calls, pasted screenshots — gone, no warning. 🧵
 
-2/ I got tired of losing work I wanted to look back on, so I built **Claude
-Sessions** — a free, local app that keeps the sessions you care about. [gif]
+2/ I got tired of losing work I wanted to look back on, so I built **Evertusk** — a free, local app that keeps the sessions you care about. [gif]
 
 3/ Bookmark or Save a session and it's copied to your machine, so it survives the
 cleanup. Even bookmarks to already-expired sessions still open.
@@ -170,7 +170,7 @@ landing page and as the first reply on every launch post.
 
 ## 7. Distribution checklist
 
-- [ ] **Homebrew cask** — `brew install --cask claude-sessions`. Biggest credibility + discovery win for a dev tool. Do this before the HN post.
+- [ ] **Homebrew cask** — `brew install --cask evertusk`. Biggest credibility + discovery win for a dev tool. Do this before the HN post.
 - [ ] Landing page: hero = positioning + demo GIF, real screenshots (theming looks sharp now), one download button.
 - [ ] GitHub repo: README opens with the hook + the GIF + a screenshot; add topics `claude-code`, `tauri`, `developer-tools`.
 - [ ] Add a subtle "⭐ Star on GitHub" nudge in-app (Settings footer or the welcome modal).
@@ -183,4 +183,4 @@ landing page and as the first reply on every launch post.
 - Lead with the **loss** ("deletes after 30 days"), resolve with the **keep**.
 - Always say **local / private / free** — it's a real differentiator and a trust builder.
 - Calm-archivist tone: you're the reliable keeper, not a hype machine.
-- Don't imply Anthropic endorsement; "for Claude Code" is a descriptor, not a claim.
+- Don't imply Anthropic or OpenAI endorsement; "for Claude Code" and "reads Codex" are descriptors, not claims.

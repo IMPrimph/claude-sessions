@@ -1,4 +1,8 @@
 export interface ProjectInfo {
+  // Every tool with sessions in this folder.
+  tools: string[];
+  // False when the folder has been moved or deleted; its history is still here.
+  folder_exists: boolean;
   project_path: string;
   project_name: string;
   short_path: string;
@@ -9,6 +13,10 @@ export interface ProjectInfo {
 
 export interface SessionInfo {
   session_id: string;
+  // Which agent wrote this session: "claude" or "codex".
+  tool: string;
+  // Archived inside the tool itself, which is different from saved in Evertusk.
+  archived_in_tool: boolean;
   summary: string | null;
   custom_title: string | null;
   ai_title: string | null;
@@ -16,10 +24,11 @@ export interface SessionInfo {
   project_path: string;
   project_name: string;
   created: string | null;
+  // Time of the last real message.
   modified: string | null;
-  message_count: number | null;
+  // The file's own write time, used only for "Now" and New activity.
+  last_written: string | null;
   conversation_count: number;
-  total_tokens: number;
   git_branch: string | null;
   // Parent session id when this session was forked/branched from another.
   forked_from_session_id: string | null;
@@ -28,6 +37,7 @@ export interface SessionInfo {
 
 export interface GlobalSearchResult {
   session_id: string;
+  tool: string;
   project_name: string;
   project_path: string;
   session_name: string;
@@ -42,10 +52,53 @@ export interface MessageImage {
   data_url: string;
 }
 
+export type MessageBlock =
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string }
+  | {
+      kind: "tool";
+      name: string;
+      summary: string;
+      // Human-readable input, capped. Empty when the summary already says it all.
+      input: string;
+      // The cap cut the input; get_tool_input returns all of it.
+      input_truncated?: boolean;
+      tool_use_id?: string;
+      // Agent id (Agent calls) or workflow run id (Workflow calls).
+      agent_id?: string;
+    }
+  | { kind: "plan"; items: PlanItem[] }
+  // A labelled aside: the end-of-turn recap or a chapter marker.
+  | { kind: "note"; label: string; text: string }
+  // Hook output during a turn.
+  | { kind: "hook"; label: string; text: string; is_error: boolean };
+
+export interface PlanItem {
+  content: string;
+  status: string;
+}
+
+export interface ShellRun {
+  command: string;
+  stdout: string;
+  stderr: string;
+}
+
+export interface SystemEvent {
+  // "fork" marks where a fork's own work starts.
+  kind: "hook" | "api-error" | "recap" | "command" | "files" | "notice" | "fork";
+  is_error?: boolean;
+  // Longer content shown collapsed under the message's one-line text.
+  detail?: string;
+}
+
 export interface ConversationMessage {
-  role: "user" | "assistant" | "compaction" | "agent-notification";
+  role: "user" | "assistant" | "compaction" | "agent-notification" | "shell" | "system-event";
+  // Plain searchable text. For assistant turns this is derived from `blocks`.
   text: string;
   timestamp: string;
+  // The ordered content of an assistant turn.
+  blocks?: MessageBlock[];
   images?: MessageImage[];
   // True on an assistant reply that was cut off mid-response by the user
   // pressing Esc.
@@ -53,17 +106,25 @@ export interface ConversationMessage {
   // True on a user message sent *during* an interruption — i.e. a mid-turn
   // steering message fired while Claude was still responding.
   mid_turn?: boolean;
-  // Present only when role === "agent-notification": a background subagent /
-  // workflow agent finishing. Claude Code stores these as user entries, but the
-  // user didn't type them — they render as a distinct card, not a bubble.
+  // A background task finishing or a subagent reporting back. Claude Code stores
+  // these as user entries, but the user didn't type them, so they render as a card.
   notification?: AgentNotification;
+  // A command the user ran with `!`.
+  shell?: ShellRun;
+  // Hooks, API errors, recaps and notices.
+  event?: SystemEvent;
+  // On a compaction: its trigger and token counts.
+  compaction_detail?: string;
+  // Copied from the parent session when this one was forked.
+  inherited?: boolean;
 }
 
-// Parsed from a <task-notification> transcript entry. Covers single subagents,
-// dynamic workflows, and multi-agent fan-outs (they share the same wrapper).
+// A background task finishing or a subagent reporting back. Covers subagents,
+// background shells, Monitor events, dynamic workflows and multi-agent fan-outs.
 export interface AgentNotification {
   summary: string;
   status: string;
+  kind: "agent" | "monitor" | "shell" | "hand-back" | "message" | "task";
   result?: string;
   tokens?: number;
   tool_uses?: number;
@@ -84,21 +145,27 @@ export interface SubagentInfo {
   description: string | null;
   jsonl_path: string;
   tool_use_id: string | null;
+  // The workflow run this agent belongs to, for agents a Workflow call spawned.
+  workflow_run?: string | null;
 }
 
 export interface ToolResultPayload {
   content: string;
   is_error: boolean;
   persisted_path: string | null;
+  // Images in this result, fetched on demand with get_tool_result_images.
+  image_count: number;
 }
 
 export interface FileEditEntry {
   timestamp: string | null;
-  action: "edit" | "write" | "multiedit" | "notebookedit";
+  action: "edit" | "write" | "delete" | "multiedit" | "notebookedit" | "bash";
   old_string: string | null;
   new_string: string | null;
   tool_use_id: string | null;
   replace_all: boolean;
+  // The edit was rejected, so it stays listed but wasn't applied.
+  failed: boolean;
 }
 
 export interface FileChange {
@@ -155,4 +222,24 @@ export interface SessionStats {
   thinking_block_count: number;
   models: string[];
   tool_counts: ToolCount[];
+  hooks: HookStat[];
+  // Time Claude spent working, summed from turn durations (excludes idle time).
+  active_ms: number;
+  cost_usd?: number;
+  lines_added?: number;
+  lines_removed?: number;
+  // The record covers only part of the session, so these are lower bounds.
+  cost_is_partial: boolean;
+  active_is_partial: boolean;
+  // Subagents' own tokens, kept out of the main-thread numbers above.
+  agent_output_tokens: number;
+  agent_input_tokens: number;
+  // Prompts copied from the parent of a fork, excluded from user_prompt_count.
+  inherited_prompts: number;
+}
+
+export interface HookStat {
+  event: string;
+  runs: number;
+  failures: number;
 }

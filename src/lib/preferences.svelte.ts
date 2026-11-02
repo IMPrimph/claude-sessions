@@ -10,7 +10,9 @@ export const THEMES: { value: Theme; label: string; description: string }[] = [
 
 interface Preferences {
   dateFormat: DateFormat;
-  defaultSearchScope: SearchScope;
+  // Which side panels are hidden. Both hidden is the full-screen chat.
+  railHidden: boolean;
+  listHidden: boolean;
   theme: Theme;
   // Whether the user has seen the first-launch explainer about Claude Code's
   // 30-day session auto-delete and how saving protects against it.
@@ -20,7 +22,8 @@ interface Preferences {
 const STORAGE_KEY = "claude-sessions-prefs";
 const defaults: Preferences = {
   dateFormat: "relative",
-  defaultSearchScope: "all",
+  railHidden: false,
+  listHidden: false,
   theme: "dark",
   hasSeenWelcome: false,
 };
@@ -54,26 +57,14 @@ export function setTheme(value: Theme) {
   persistPreferences();
 }
 
-// Cycle dark → light → bright → dark, for the quick toggle button.
-export function cycleTheme() {
-  const order: Theme[] = ["dark", "light", "bright"];
-  const nextIndex = (order.indexOf(preferences.theme) + 1) % order.length;
-  setTheme(order[nextIndex]);
-}
-
-export function toggleDateFormat() {
-  preferences.dateFormat =
-    preferences.dateFormat === "relative" ? "absolute" : "relative";
-  persistPreferences();
-}
-
 export function setDateFormat(value: DateFormat) {
   preferences.dateFormat = value;
   persistPreferences();
 }
 
-export function setDefaultSearchScope(value: SearchScope) {
-  preferences.defaultSearchScope = value;
+export function setPanels(railHidden: boolean, listHidden: boolean) {
+  preferences.railHidden = railHidden;
+  preferences.listHidden = listHidden;
   persistPreferences();
 }
 

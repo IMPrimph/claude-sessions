@@ -1,0 +1,36 @@
+---
+import Guide from '../layouts/Guide.astro'
+---
+<Guide
+  path="/codex-session-history/"
+  title="Where Codex stores your session history"
+  description="Codex keeps each session as a rollout file in ~/.codex/sessions, sorted by date and often compressed. What's in them, and how to read and search them."
+>
+  <p class="guide-lead">Codex saves each session as a "rollout" file in <code>~/.codex/sessions/</code>, in folders sorted by year, month and day. Most older files are compressed with Zstandard, so plain <code>grep</code> and text editors can't read them directly.</p>
+
+  <h2>Where are Codex sessions stored?</h2>
+  <pre><code>~/.codex/sessions/2026/10/28/
+  rollout-2026-10-28T14-02-11-&lt;id&gt;.jsonl
+  rollout-2026-10-28T09-41-52-&lt;id&gt;.jsonl.zst
+
+~/.codex/archived_sessions/     sessions you archived</code></pre>
+  <p>If you've set the <code>CODEX_HOME</code> environment variable, these folders are there instead of in <code>~/.codex</code>. Unlike Claude Code, the files are organised by date and not by project: each session records its working folder inside the file.</p>
+
+  <h2>Why are Codex session files compressed?</h2>
+  <p>On the Mac this app is built on, 267 of 271 rollout files end in <code>.jsonl.zst</code>. To read one yourself, decompress it to the terminal:</p>
+  <pre><code>zstd -dc rollout-….jsonl.zst | head</code></pre>
+  <p>To search across all of them, <code>zstdgrep</code> handles both kinds of file. The format isn't a documented, stable interface, and it has changed over time, so scripts that parse it can break after an update.</p>
+
+  <h2>Does Codex delete old sessions?</h2>
+  <p>We couldn't find a documented automatic cleanup like Claude Code's 30-day one, and we've seen no sign of one: the same Mac still has rollouts from October 2025. That's one machine and not a guarantee, so check your own folder before relying on it.</p>
+
+  <h2>How do I read an old Codex session?</h2>
+  <ul>
+    <li><strong>In Codex:</strong> <code>codex resume</code> opens a picker, and <code>codex resume --last</code> reopens your most recent session.</li>
+    <li><strong>As raw files:</strong> use <code>zstd -dc</code> as above. Expect a lot of bookkeeping lines around the conversation.</li>
+    <li><strong>In a viewer:</strong> <a href="/">Evertusk</a> reads both compressed and plain rollouts and shows them next to your Claude Code sessions from the same folder, so one project's history is in one place.</li>
+  </ul>
+
+  <h2>What can't you see in a Codex session?</h2>
+  <p>Some things aren't in the files, so no viewer can show them. Codex records tokens but no cost, and its thinking is often encrypted. In Evertusk, saving a separate copy works for Claude Code sessions only, because that's where the 30-day cleanup applies. You can still bookmark Codex messages.</p>
+</Guide>

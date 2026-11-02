@@ -1,0 +1,51 @@
+---
+import Guide from '../layouts/Guide.astro'
+---
+<Guide
+  path="/claude-code-session-history/"
+  title="Where Claude Code stores sessions, and when it deletes them"
+  heading="Where Claude Code stores your session history, and when it deletes it"
+  description="Claude Code keeps sessions as JSONL files in ~/.claude/projects and deletes them after 30 days by default. How to change that, and how to read old sessions."
+>
+  <p class="guide-lead">Claude Code saves each session as a plain-text JSONL file in <code>~/.claude/projects/</code>. By default it deletes those files after 30 days, without showing a message. You can change that with the <code>cleanupPeriodDays</code> setting, but only for sessions that still exist.</p>
+
+  <h2>Where are Claude Code sessions stored?</h2>
+  <p>Each project gets a folder under <code>~/.claude/projects/</code>, named after the project's path with its separators replaced by dashes. Each session is one file in that folder:</p>
+  <pre><code>~/.claude/projects/-Users-alex-code-checkout-api/
+  8f3c1e2a-….jsonl              the conversation
+  8f3c1e2a-…/subagents/         transcripts of agents it started
+  8f3c1e2a-…/tool-results/      large tool output, saved separately</code></pre>
+  <p>Every line of a transcript is one JSON record: your message, Claude's reply, a tool call or its result. Anthropic's <a href="https://code.claude.com/docs/en/claude-directory.md">directory reference</a> lists these files and notes that they're plaintext, so anything that passed through a tool is in there, including file contents and command output.</p>
+
+  <h2>Does Claude Code delete old sessions?</h2>
+  <p>Yes. The <a href="https://code.claude.com/docs/en/settings-reference#cleanupperioddays"><code>cleanupPeriodDays</code> setting</a> defaults to 30. Claude Code runs the deletion as a background sweep after a session starts, and the docs say it doesn't show a message when it does.</p>
+  <p>This is easy to miss. On the Mac this app is built on, which has never changed the setting, no transcript in <code>~/.claude/projects</code> is older than 31 days, even after months of daily use.</p>
+  <p>Subagent transcripts are removed along with their parent session. Anthropic has <a href="https://www.theregister.com/a/5264673">defended the default on security grounds</a>, since transcripts can contain source code and credentials. That is a real tradeoff to weigh before keeping everything forever.</p>
+
+  <h2>How do I keep Claude Code sessions for longer?</h2>
+  <p>Set a higher number of days in <code>~/.claude/settings.json</code>. It has to be a whole number of at least 1:</p>
+  <pre><code>{`{
+  "cleanupPeriodDays": 365
+}`}</code></pre>
+  <p>This only protects sessions that haven't been deleted yet, and it keeps everything rather than the sessions you care about. Your options, side by side:</p>
+  <div class="guide-table">
+    <table>
+      <thead><tr><th>Approach</th><th>Keeps</th><th>Good for</th><th>Watch out for</th></tr></thead>
+      <tbody>
+        <tr><td>Raise <code>cleanupPeriodDays</code></td><td>Everything, for as long as you set</td><td>Never losing a session</td><td>More secrets sitting in plain text</td></tr>
+        <tr><td>Copy the files yourself</td><td>Whatever you copy</td><td>A one-off backup</td><td>Easy to miss subagents and images</td></tr>
+        <tr><td><a href="/">Save in Evertusk</a></td><td>The sessions you choose, with subagents and images</td><td>Keeping only what matters</td><td>Mac only, and you have to save before the cleanup</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>How do I read an old Claude Code session?</h2>
+  <ul>
+    <li><strong>In Claude Code:</strong> <code>claude --resume</code> opens a picker of past sessions, in the folder you run it from. It's built for continuing a session rather than searching your history.</li>
+    <li><strong>As raw files:</strong> open the JSONL directly, or use <code>grep</code> across <code>~/.claude/projects</code>. This works, but a long session runs to many megabytes of JSON, and the format isn't documented, so it can change between versions.</li>
+    <li><strong>In a viewer:</strong> <a href="/">Evertusk</a> lists every session across projects, searches every message, and shows thinking, tool calls, subagents, pasted images and every file changed.</li>
+  </ul>
+
+  <h2>Can I get a deleted Claude Code session back?</h2>
+  <p>Usually not. Once the sweep removes a transcript, Claude Code has no copy of it. Your only chance is a backup, such as Time Machine, taken while the file existed. To check, look in the same project folder in your backup.</p>
+</Guide>

@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://claude-sessions-blond.vercel.app/sitemap.xml

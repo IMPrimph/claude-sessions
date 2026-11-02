@@ -5,8 +5,9 @@ import tailwindcss from '@tailwindcss/vite';
 
 // https://astro.build/config
 export default defineConfig({
-  // Canonical production origin — used by Astro for absolute URL resolution and
-  // must match the SITE constant in src/pages/index.astro + public/sitemap.xml.
+  // The site's address. Canonical URLs, the sitemap, robots.txt, llms.txt and structured data
+  // all derive from this line: it's the only thing to change when the domain moves.
+  trailingSlash: 'always',
   site: 'https://claude-sessions-blond.vercel.app',
   vite: {
     plugins: [tailwindcss()]

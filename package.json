@@ -1,14 +1,17 @@
 {
   "name": "claude-sessions",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "check": "svelte-check --tsconfig ./tsconfig.json"
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test:ui": "vite build && node scripts/ui_check.mjs",
+    "demo:data": "python3 -I scripts/build_demo_data.py",
+    "build:demo": "vite build --mode demo --base ./ --outDir website/public/demo --emptyOutDir"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
@@ -16,12 +19,13 @@
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
-    "dompurify": "^3.4.15"
+    "dompurify": "^3.4.15",
+    "marked": "^18.1.2"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tauri-apps/cli": "^2.10.1",
-    "puppeteer-core": "^25.6.0",
+    "puppeteer-core": "^25.16.0",
     "svelte": "^5.25.0",
     "svelte-check": "^4.7.6",
     "typescript": "^5.9.3",

@@ -28,16 +28,16 @@ Bump the version in **all four** of these, then sync the lockfile:
 | `package.json` | `"version"` |
 | `src-tauri/tauri.conf.json` | `"version"` — this is the one the app reports at runtime |
 | `src-tauri/Cargo.toml` | `version` under `[package]` |
-| `website/src/pages/index.astro` | `const VERSION` — drives the download link + JSON-LD |
+| `website/src/site.ts` | `const VERSION` — drives the download link + JSON-LD |
 
 ```bash
 OLD=1.1.0 ; NEW=1.1.1
 sed -i '' "s/\"version\": \"$OLD\"/\"version\": \"$NEW\"/" package.json src-tauri/tauri.conf.json
 sed -i '' "s/^version = \"$OLD\"/version = \"$NEW\"/" src-tauri/Cargo.toml
-sed -i '' "s/const VERSION = \"$OLD\"/const VERSION = \"$NEW\"/" website/src/pages/index.astro
+sed -i '' "s/const VERSION = \"$OLD\"/const VERSION = \"$NEW\"/" website/src/site.ts
 ( cd src-tauri && cargo check --quiet )      # updates Cargo.lock to the new version
 # sanity: no old version left anywhere in source
-grep -rn "$OLD" package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json website/src/pages/index.astro src/ src-tauri/src/
+grep -rn "$OLD" package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json website/src/site.ts src/ src-tauri/src/
 ```
 
 > The in-app version badge (top-left of the project grid) reads the version
@@ -46,6 +46,17 @@ grep -rn "$OLD" package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json webs
 > to bump**. It was hardcoded once; that shipped the wrong number in a public
 > release (see Lessons). Keep it dynamic.
 
+## Website demo
+
+The site's clickable demo is the real app running on made-up sessions, built into
+`website/public/demo` and committed. Rebuild it on every release, or it shows the old UI:
+
+```bash
+npm run demo:data     # only when the parser or the made-up sessions changed
+npm run build:demo
+( cd website && npm run build && npm run check:seo )
+```
+
 ## Gates (run before tagging — evidence, not vibes)
 
 ```bash
@@ -53,7 +64,12 @@ grep -rn "$OLD" package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json webs
 npm run build                                                # frontend (vite) build
 npm run check                                                # type check (svelte-check) — must report 0 errors
 ( cd src-tauri && cargo clippy --all-targets -- -D warnings ) # lint — must be clean
+npm run test:ui                                              # UI regressions, in headless Chrome
+python3 scripts/audit_transcripts.py                         # app + export vs your real transcripts
 ```
+
+The last two need a local machine (Chrome, real sessions), so they aren't in CI. Run the
+audit whenever Claude Code or Codex ships a format change: it's what catches lost content.
 
 The same checks run on every push via `.github/workflows/ci.yml`. (`svelte-check@4.1.0`
 crashes with TypeScript 5.9; the "phantom `never`" errors newer versions reported were

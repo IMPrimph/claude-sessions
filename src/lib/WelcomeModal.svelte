@@ -1,22 +1,12 @@
 <script lang="ts">
   import BrandMark from "./BrandMark.svelte";
+  import { closeDialog, modal } from "./dialog";
 
   let { onDismiss }: { onDismiss: () => void } = $props();
-
-  function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" || event.key === "Enter") {
-      event.preventDefault();
-      onDismiss();
-    }
-  }
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="overlay" onclick={onDismiss}>
-  <div class="dialog" onclick={(event) => event.stopPropagation()}>
+<dialog class="app-dialog welcome" style="--dialog-width: 460px" aria-labelledby="welcome-title" use:modal={onDismiss}>
+  <div class="dialog-body">
     <div class="brand-lockup">
       <BrandMark size={15} />
       <span>Evertusk</span>
@@ -25,11 +15,11 @@
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
     </div>
 
-    <h2>Your Claude Code sessions expire in 30 days</h2>
+    <h2 id="welcome-title">Everything your agents did, in one place</h2>
     <p class="lead">
-      Claude Code automatically deletes your session history after 30 days.
-      Once a session is gone, its full transcript, images, and context are
-      <strong>gone for good</strong> — even a bookmark can't bring them back.
+      Evertusk reads the history Claude Code and Codex keep on this Mac. Find any past
+      session, see what it changed and what failed, and keep copies of Claude Code
+      sessions past its cleanup. <strong>Nothing leaves your Mac.</strong>
     </p>
 
     <div class="points">
@@ -49,49 +39,21 @@
         </span>
         <div class="point-text">
           <strong>Stays on your machine.</strong> Saved sessions are copied to a
-          local folder you control. Nothing is uploaded — no cloud, no account.
+          local folder you control. Nothing is uploaded: no cloud, no account.
         </div>
       </div>
     </div>
 
-    <button class="cta" onclick={onDismiss}>Got it — let me browse</button>
-    <p class="footnote">You can change where saved sessions live in Settings. Evertusk is not affiliated with Anthropic.</p>
+    <!-- svelte-ignore a11y_autofocus -->
+    <button class="cta" onclick={closeDialog} autofocus>Got it, let me browse</button>
+    <p class="footnote">You can change where saved sessions live in Settings. Evertusk is not affiliated with Anthropic or OpenAI.</p>
   </div>
-</div>
+</dialog>
 
 <style>
-  .overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 300;
-    background: var(--overlay-scrim, rgba(0, 0, 0, 0.6));
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-    animation: overlay-fade 0.18s ease-out;
-  }
-
-  @keyframes overlay-fade {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
-  .dialog {
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
-    width: 100%;
-    max-width: 460px;
+  .dialog-body {
     padding: 30px 30px 24px;
     text-align: center;
-    animation: dialog-rise 0.2s ease-out;
-  }
-
-  @keyframes dialog-rise {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
   }
 
   .brand-lockup {
@@ -102,9 +64,7 @@
     margin-bottom: 18px;
     font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0.02em;
     color: var(--text-muted);
-    text-transform: uppercase;
   }
 
   .hero-icon {
@@ -115,9 +75,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #fbbf24;
-    background: rgba(245, 158, 11, 0.12);
-    border: 1px solid rgba(245, 158, 11, 0.3);
+    color: var(--accent-text);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
   }
 
   h2 {
@@ -166,13 +126,13 @@
   }
 
   .point-icon-save {
-    color: #f4bf5f;
-    background: rgba(245, 158, 11, 0.12);
+    color: var(--accent-text);
+    background: var(--accent-soft);
   }
 
   .point-icon-lock {
-    color: var(--accent-hover);
-    background: rgba(99, 102, 241, 0.12);
+    color: var(--accent-text);
+    background: var(--accent-soft);
   }
 
   .point-text {
@@ -182,14 +142,14 @@
   }
 
   .point-text strong { color: var(--text-primary); }
-  .point-text em { font-style: normal; font-weight: 600; color: var(--accent-hover); }
+  .point-text em { font-style: normal; font-weight: 600; color: var(--accent-text); }
 
   .cta {
     width: 100%;
     padding: 11px;
     font-size: 14px;
     font-weight: 600;
-    color: white;
+    color: var(--on-accent);
     background: var(--accent);
     border: none;
     border-radius: 9px;
@@ -200,8 +160,8 @@
   .cta:hover { background: var(--accent-hover); }
 
   .footnote {
-    font-size: 11.5px;
-    color: var(--text-faint);
+    font-size: 12px;
+    color: var(--text-muted);
     margin: 12px 0 0;
   }
 </style>

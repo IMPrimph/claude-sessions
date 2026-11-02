@@ -95,7 +95,7 @@ fn main() {
         }
     };
 
-    let sessions = match commands::scan_projects(None) {
+    let sessions = match commands::scan_projects() {
         Ok(sessions) => sessions,
         Err(scan_error) => {
             eprintln!("Failed to scan projects: {}", scan_error);

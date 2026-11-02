@@ -1,9 +1,11 @@
 import "./theme.css";
-import App from "./App.svelte";
 import { mount } from "svelte";
 
-const app = mount(App, {
-  target: document.getElementById("app")!,
-});
+// The website's demo answers the app's backend calls itself, and has to be in place first.
+const ready = import.meta.env.MODE === "demo" ? import("./demoBackend") : Promise.resolve();
 
-export default app;
+ready.then(async () => {
+  const { default: App } = await import("./App.svelte");
+  mount(App, { target: document.getElementById("app")! });
+  document.getElementById("boot")?.remove();
+});

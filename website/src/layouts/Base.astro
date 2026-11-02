@@ -1,0 +1,93 @@
+---
+import '../styles/global.css'
+import Analytics from '@vercel/analytics/astro'
+import { GITHUB_URL, DOWNLOAD_MAC, OG_IMAGE, SITE, VERSION } from '../site'
+
+interface Props {
+  title: string
+  description: string
+  path: string
+  structuredData: object
+  ogType?: string
+  ogImageAlt?: string
+  noindex?: boolean
+}
+const { title, description, path, structuredData, ogType = "website", noindex = false, ogImageAlt = "The Evertusk app showing Claude Code and Codex sessions in one list" } = Astro.props
+const canonical = SITE + path
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0c0c0d" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    {noindex ? <meta name="robots" content="noindex" /> : <meta name="robots" content="index, follow, max-image-preview:large" />}
+    {!noindex && <link rel="canonical" href={canonical} />}
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+
+    <meta property="og:type" content={ogType} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={OG_IMAGE} />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={ogImageAlt} />
+    <meta property="og:site_name" content="Evertusk" />
+    <meta property="og:locale" content="en_US" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={OG_IMAGE} />
+    <meta name="twitter:image:alt" content={ogImageAlt} />
+
+    <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
+
+    <!-- Vercel Web Analytics: cookieless, no personal data. -->
+    <Analytics />
+  </head>
+  <body class="bg-[#08080f] text-[#c8c8e0] antialiased overflow-x-hidden">
+    <slot name="top" />
+
+    <nav aria-label="Main" class="relative z-10 flex items-center justify-between max-w-[1296px] mx-auto px-6 py-6">
+      <a href="/" class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-[#26262b] to-[#0c0c0e] border border-white/5 flex items-center justify-center shadow-lg">
+          <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <path d="M9 8.2C5 6.4 2.2 9 2.8 13.2c.5 3.5 3.4 4.8 6 3.6z" fill="#f59e0b"/>
+            <path d="M23 8.2c4-1.8 6.8.8 6.2 5c-.5 3.5-3.4 4.8-6 3.6z" fill="#f59e0b"/>
+            <path d="M16 6C10.8 6 8 9.4 8 13.8S10.8 21 16 21s8-2.8 8-7.2S21.2 6 16 6z" fill="#f59e0b"/>
+            <path d="M13.7 18.5h4.6v6.1c0 1.6-1.1 2.5-2.3 2.5s-2.3-.9-2.3-2.5z" fill="#f59e0b"/>
+            <circle cx="12.9" cy="13.3" r="1.2" fill="#241304"/>
+            <circle cx="19.1" cy="13.3" r="1.2" fill="#241304"/>
+          </svg>
+        </div>
+        <span class="font-display font-bold text-lg text-white tracking-tight">Evertusk</span>
+      </a>
+      <div class="flex items-center gap-5 text-sm text-[#a0a0a8]">
+        <a href="/#try-it" class="hover:text-white transition-colors">Try it</a>
+        <a href={GITHUB_URL} class="hover:text-white transition-colors">GitHub</a>
+        <a href={DOWNLOAD_MAC} class="px-3.5 py-2 rounded-lg bg-amber-500 text-[#1a1100] font-semibold hover:bg-amber-400 transition-colors">Download</a>
+      </div>
+    </nav>
+
+    <main><slot /></main>
+
+    <footer class="relative z-10 border-t border-[#1a1a2e] py-8 mt-8">
+      <div class="max-w-[1296px] mx-auto px-6 flex flex-col md:flex-row md:items-center justify-between gap-4 text-sm text-[#8a8a92]">
+        <span>Evertusk &middot; v{VERSION} &middot; Not affiliated with or endorsed by Anthropic or OpenAI</span>
+        <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+          <a href="/claude-code-session-history/" class="hover:text-amber-300 transition-colors">Claude Code history</a>
+          <a href="/codex-session-history/" class="hover:text-amber-300 transition-colors">Codex history</a>
+          <a href="/privacy/" class="hover:text-amber-300 transition-colors">Privacy</a>
+          <a href={GITHUB_URL} class="hover:text-amber-300 transition-colors">GitHub</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

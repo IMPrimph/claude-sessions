@@ -1,53 +1,90 @@
-/* ── Theme tokens ─────────────────────────────────────────────────────────
-   Default :root = Dark (neutral charcoal). Light / Bright override via
-   <html data-theme="…"> set from the saved preference (see preferences.svelte).
-   Code blocks keep a constant dark surface in every theme so syntax-highlight
-   pastels stay readable. Accent stays indigo across themes. */
+/* Theme tokens. Dark is the default: this sits beside an editor, often at night. Amber is
+   reserved for "look here" (selection, running, saved) and red for failure, so colour
+   always means something. Code blocks keep a dark surface in every theme. */
 :root {
   color-scheme: dark;
-  --bg-app: #0d0d0d;
-  --bg-sidebar: #141414;
-  --bg-panel: #161616;
-  --bg-elevated: #1e1e1e;
-  --bg-hover: #262626;
-  --border: #2a2a2a;
-  --border-strong: #3a3a3a;
-  --text-primary: #e8e8e8;
-  --text-secondary: #b4b4b4;
-  --text-muted: #8a8a8a;
-  --text-faint: #6a6a6a;
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --accent-bright: #a5b4fc;
-  --accent-text: #c7d2fe;
+  --bg-app: #0c0c0d;
+  --bg-sidebar: #111112;
+  --bg-panel: #111112;
+  --bg-elevated: #1b1b1d;
+  --bg-hover: #1f1f22;
+  --bg-selected: #242427;
+  --border: #252528;
+  --border-strong: #38383c;
+  --text-primary: #ededee;
+  --text-secondary: #bcbcc2;
+  --text-muted: #94949b;
+  --text-faint: #8d8d94;
+  --accent: #f59e0b;
+  --accent-hover: #fbbf24;
+  --accent-bright: #fcd34d;
+  --accent-text: #fbbf24;
+  --accent-soft: rgba(245, 158, 11, 0.13);
+  --tool-claude: #e08a6a;
+  --tool-codex: #8f93ff;
+  --on-accent: #1a1000;
+  --accent-border: rgba(245, 158, 11, 0.45);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.11);
+  --danger-border: rgba(248, 113, 113, 0.4);
+  --ok: #4ade80;
+  --ok-soft: rgba(74, 222, 128, 0.11);
+  --ok-border: rgba(74, 222, 128, 0.4);
+  --teal-text: #2dd4bf;
+  --inline-code-bg: #242427;
+  --inline-code-text: #d3b3f5;
   --interject-bg: #241f16;
-  --bubble-user: #23242b;
+  --bubble-user: #2a2a2f;
+  --overlay-scrim: rgba(0, 0, 0, 0.62);
   /* constant across all themes */
-  --code-bg: #1a1b1e;
-  --code-header-bg: #232428;
-  --code-text: #c9d1d9;
-  --code-muted: #8b949e;
+  --mark-bg: #f59e0b;
+  --mark-text: #1a1000;
+  --code-bg: #18181a;
+  --code-header-bg: #222225;
+  --code-text: #d4d4d8;
+  --code-muted: #9a9aa1;
+  --code-border: rgba(255, 255, 255, 0.15);
+  --code-hover: rgba(255, 255, 255, 0.06);
+  --code-danger: #fca5a5;
+  --syn-keyword: #c792ea;
+  --syn-string: #c3e88d;
+  --syn-comment: #8fa3ad;
 }
 
 html[data-theme="light"] {
   color-scheme: light;
   --bg-app: #f4f4f5;
-  --bg-sidebar: #ececee;
+  --bg-sidebar: #ebebed;
   --bg-panel: #ffffff;
   --bg-elevated: #ffffff;
-  --bg-hover: #e7e7ea;
-  --border: #e1e1e4;
-  --border-strong: #cbcbd0;
+  --bg-hover: #e6e6e9;
+  --bg-selected: #dddde1;
+  --border: #dfdfe3;
+  --border-strong: #c6c6cc;
   --text-primary: #18181b;
-  --text-secondary: #52525b;
-  --text-muted: #71717a;
-  --text-faint: #a1a1aa;
-  --accent: #5457e6;
-  --accent-hover: #4f46e5;
-  --accent-bright: #4338ca;
-  --accent-text: #4338ca;
+  --text-secondary: #4a4a52;
+  --text-muted: #606068;
+  --text-faint: #606068;
+  --accent: #b45f00;
+  --accent-hover: #954e00;
+  --accent-bright: #954e00;
+  --accent-text: #8a4800;
+  --accent-soft: rgba(180, 95, 0, 0.12);
+  --tool-claude: #b4532f;
+  --tool-codex: #4c4fd6;
+  --on-accent: #ffffff;
+  --accent-border: rgba(180, 95, 0, 0.45);
+  --danger: #b91c1c;
+  --danger-soft: rgba(185, 28, 28, 0.08);
+  --danger-border: rgba(185, 28, 28, 0.35);
+  --ok: #116a32;
+  --ok-soft: rgba(21, 128, 61, 0.1);
+  --ok-border: rgba(21, 128, 61, 0.4);
+  --teal-text: #0d6b62;
+  --inline-code-bg: #e4e4e8;
+  --inline-code-text: #5b21b6;
   --interject-bg: #fff7e6;
-  --bubble-user: #e7e9ef;
+  --bubble-user: #e1e1e7;
 }
 
 html[data-theme="bright"] {
@@ -56,17 +93,105 @@ html[data-theme="bright"] {
   --bg-sidebar: #ffffff;
   --bg-panel: #ffffff;
   --bg-elevated: #ffffff;
-  --bg-hover: #f1f1f1;
-  --border: #e4e4e4;
-  --border-strong: #c8c8c8;
+  --bg-hover: #f0f0f0;
+  --bg-selected: #e8e8e8;
+  --border: #e2e2e2;
+  --border-strong: #bdbdbd;
   --text-primary: #000000;
-  --text-secondary: #3a3a3a;
-  --text-muted: #5c5c5c;
-  --text-faint: #8a8a8a;
-  --accent: #4f46e5;
-  --accent-hover: #4338ca;
-  --accent-bright: #4338ca;
-  --accent-text: #3730a3;
+  --text-secondary: #333333;
+  --text-muted: #555555;
+  --text-faint: #656565;
+  --accent: #a85400;
+  --accent-hover: #8a4500;
+  --accent-bright: #8a4500;
+  --accent-text: #7a3d00;
+  --accent-soft: rgba(168, 84, 0, 0.11);
+  --tool-claude: #b4532f;
+  --tool-codex: #4c4fd6;
+  --on-accent: #ffffff;
+  --accent-border: rgba(168, 84, 0, 0.45);
+  --danger: #b00020;
+  --danger-soft: rgba(176, 0, 32, 0.07);
+  --danger-border: rgba(176, 0, 32, 0.35);
+  --ok: #0f6b33;
+  --ok-soft: rgba(15, 107, 51, 0.09);
+  --ok-border: rgba(15, 107, 51, 0.4);
+  --teal-text: #0d6b62;
+  --inline-code-bg: #eeeef1;
+  --inline-code-text: #5b21b6;
   --interject-bg: #fffbeb;
-  --bubble-user: #eef0f4;
+  --bubble-user: #eaeaef;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+
+/* One disclosure marker everywhere, instead of the native triangle. Summaries that draw their
+   own chevron keep it. */
+details > summary {
+  list-style: none;
+  box-sizing: border-box;
+  min-height: 24px;
+  padding-block: 3px;
+}
+details > summary::-webkit-details-marker { display: none; }
+
+details > summary:not(:has(svg))::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin: 0 7px 2px 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+details[open] > summary:not(:has(svg))::before { transform: rotate(45deg); }
+
+/* The one "working on it" signal: a thin amber line that moves. Under reduced motion it
+   stays still, and the words beside it still say what's happening. */
+.progress {
+  position: relative;
+  flex-shrink: 0;
+  height: 2px;
+  overflow: hidden;
+  background: var(--border);
+}
+
+.progress::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  background: var(--accent);
+  animation: progress-slide 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes progress-slide {
+  from { transform: translateX(-20%); }
+  to { transform: translateX(210%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress::after { animation: none; width: 100%; opacity: 0.5; }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

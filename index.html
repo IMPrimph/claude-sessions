@@ -2,11 +2,25 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Evertusk</title>
+    <script src="/boot-theme.js"></script>
+    <style>
+      html { background: #0c0c0d; color: #94949b; }
+      html[data-theme="light"] { background: #f4f4f5; color: #63636b; }
+      html[data-theme="bright"] { background: #ffffff; color: #555555; }
+      #boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+    </style>
   </head>
   <body>
+    <div id="boot" role="status">Starting Evertusk…</div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
